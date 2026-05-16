@@ -1,0 +1,53 @@
+{
+  "name": "smart-grading-backend",
+  "version": "1.0.0",
+  "description": "智能实训作业批改管理系统后端",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:cluster": "node scripts/run-cluster.cjs",
+    "dev": "nodemon server.js",
+    "pm2:start": "pm2 start pm2.config.js --env production",
+    "pm2:clean-start": "node scripts/pm2-clean-restart-production.cjs",
+    "pm2:start:dev": "node scripts/pm2-restart-dev.cjs",
+    "pm2:dev": "node scripts/pm2-restart-dev.cjs",
+    "pm2:dev:win": "wscript scripts\\pm2-dev-hidden.vbs",
+    "pm2:stop": "pm2 stop smart-grading-api",
+    "pm2:restart": "pm2 restart smart-grading-api",
+    "pm2:reload": "pm2 reload smart-grading-api",
+    "pm2:delete": "pm2 delete smart-grading-api",
+    "pm2:logs": "pm2 logs smart-grading-api",
+    "pm2:logs:err": "pm2 logs smart-grading-api --err",
+    "pm2:logs:out": "pm2 logs smart-grading-api --lines 200",
+    "pm2:status": "pm2 status",
+    "pm2:monit": "pm2 monit",
+    "pm2:save": "pm2 save",
+    "pm2:flush": "pm2 flush smart-grading-api"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.49",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "mammoth": "^1.8.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.6.5",
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.15.0",
+    "redis": "^4.7.1",
+    "socket.io": "^4.8.3",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

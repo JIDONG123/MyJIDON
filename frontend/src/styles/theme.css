@@ -1,0 +1,107 @@
+/**
+ * 全局设计令牌 — 企业级后台视觉基线
+ * 与 Element Plus CSS 变量对齐，供全站与三端布局复用
+ */
+
+:root {
+  /* 主色 — 偏靛蓝，对比与辨识度优于纯蓝 */
+  --sg-primary: #2563eb;
+  --sg-primary-hover: #3b82f6;
+  --sg-primary-active: #1d4ed8;
+  --sg-primary-soft: rgba(37, 99, 235, 0.12);
+
+  --sg-success: #059669;
+  --sg-warning: #d97706;
+  --sg-danger: #dc2626;
+  --sg-info: #0284c7;
+
+  /* 文字 */
+  --sg-text: #0f172a;
+  --sg-text-secondary: #475569;
+  --sg-text-placeholder: #94a3b8;
+  --sg-text-disabled: #cbd5e1;
+
+  /* 面与边 */
+  --sg-border: #e2e8f0;
+  --sg-border-strong: #cbd5e1;
+  --sg-fill: #f8fafc;
+  --sg-fill-muted: #f1f5f9;
+  --sg-bg-page: #eef2f7;
+  --sg-bg-elevated: #ffffff;
+
+  /* 侧栏渐变（三端区分） */
+  --sg-sidebar-admin-from: #0c1222;
+  --sg-sidebar-admin-to: #1e3a5f;
+  --sg-sidebar-teacher-from: #0c1929;
+  --sg-sidebar-teacher-to: #1d4ed8;
+  --sg-sidebar-student-from: #064e3b;
+  --sg-sidebar-student-to: #0d9488;
+  --sg-sidebar-enterprise-from: #1e1b4b;
+  --sg-sidebar-enterprise-to: #4f46e5;
+
+  /* 尺寸 */
+  --sg-sidebar-width: 232px;
+  --sg-header-height: 60px;
+  --sg-radius-xs: 4px;
+  --sg-radius-sm: 6px;
+  --sg-radius-md: 10px;
+  --sg-radius-lg: 14px;
+  --sg-radius-xl: 20px;
+
+  /* 阴影层次 */
+  --sg-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --sg-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --sg-shadow-card: 0 4px 20px rgba(15, 23, 42, 0.07);
+  --sg-shadow-md: 0 8px 30px rgba(15, 23, 42, 0.1);
+  --sg-shadow-header: 0 1px 0 rgba(15, 23, 42, 0.06), 0 4px 24px rgba(15, 23, 42, 0.04);
+
+  /* 动效 */
+  --sg-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --sg-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --sg-transition-fast: 0.16s var(--sg-ease-in-out);
+  --sg-transition: 0.24s var(--sg-ease-in-out);
+  --sg-transition-slow: 0.36s var(--sg-ease-out);
+
+  --sg-content-max: 1480px;
+  --sg-z-header: 100;
+  --sg-z-sidebar: 90;
+
+  /* Element Plus 主色链 */
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #3b82f6;
+  --el-color-primary-light-5: #60a5fa;
+  --el-color-primary-light-7: #93c5fd;
+  --el-color-primary-light-8: #bfdbfe;
+  --el-color-primary-light-9: #eff6ff;
+  --el-color-primary-dark-2: #1d4ed8;
+
+  --el-border-radius-base: 10px;
+  --el-border-radius-small: 8px;
+  --el-border-radius-round: 999px;
+  --el-font-size-base: 14px;
+  --el-component-size-large: 42px;
+  --el-component-size: 38px;
+  --el-component-size-small: 28px;
+
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+}
+
+/* 侧栏菜单激活态（各 Layout 使用 class="sidebar-menu"） */
+.sidebar-menu.el-menu .el-menu-item {
+  border-radius: var(--sg-radius-md);
+  margin: 2px 8px;
+  width: calc(100% - 16px) !important;
+  transition: background var(--sg-transition), color var(--sg-transition), box-shadow var(--sg-transition);
+}
+
+.sidebar-menu.el-menu .el-menu-item.is-active {
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-menu.el-menu .el-menu-item {
+    transition: none;
+  }
+}

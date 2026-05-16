@@ -1,0 +1,123 @@
+# 智能实训批改系统 — Docker Compose（MariaDB + Redis + Node cluster）
+# 适用：Windows x86 / Linux amd64 / arm64 / 龙芯 LoongArch + 麒麟（多架构镜像）
+# 不使用 PM2、不使用 Nginx；后端 node cluster.js，前端 vite preview 静态托管 + 代理
+
+name: smart-grading
+
+networks:
+  sg-net:
+    driver: bridge
+
+volumes:
+  mariadb_data:
+  redis_data:
+  backend_uploads:
+
+services:
+  mariadb:
+    image: ${MARIADB_IMAGE:-mariadb:11.4}
+    container_name: sg-mariadb
+    restart: unless-stopped
+    networks:
+      - sg-net
+    ports:
+      - "${MARIADB_PORT:-3306}:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_change_me}
+      MARIADB_DATABASE: ${DB_NAME:-smart_grading_system}
+      MARIADB_USER: ${DB_USER:-sg_user}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-sg_pass_change_me}
+      TZ: Asia/Shanghai
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-bookworm}
+    container_name: sg-redis
+    restart: unless-stopped
+    networks:
+      - sg-net
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
+    image: smart-grading-backend:local
+    container_name: sg-backend
+    restart: unless-stopped
+    networks:
+      - sg-net
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "3000"
+      USE_CLUSTER: ${USE_CLUSTER:-1}
+      CLUSTER_WORKERS: ${CLUSTER_WORKERS:-2}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      DB_HOST: mariadb
+      DB_USER: ${DB_USER:-sg_user}
+      DB_PASSWORD: ${DB_PASSWORD:-sg_pass_change_me}
+      DB_NAME: ${DB_NAME:-smart_grading_system}
+      REDIS_ENABLED: "1"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_URL: redis://redis:6379/0
+      SOCKET_IO_REDIS_KEY: ${SOCKET_IO_REDIS_KEY:-sg:socket.io}
+      SOCKET_IO_REDIS_DEV_PROBE: "0"
+    volumes:
+      - backend_uploads:/app/uploads
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('net').createConnection(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
+        VITE_PROXY_TARGET: http://backend:3000
+    image: smart-grading-frontend:local
+    container_name: sg-frontend
+    restart: unless-stopped
+    networks:
+      - sg-net
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    environment:
+      VITE_PROXY_TARGET: http://backend:3000

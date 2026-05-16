@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+logs
+uploads/*
+!uploads/.gitkeep
+.git
+*.md
+pm2.config.js
+scripts/pm2-*

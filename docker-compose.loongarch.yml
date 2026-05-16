@@ -1,0 +1,22 @@
+# 龙芯 LoongArch + 麒麟 环境可选覆盖（与 docker-compose.yml 叠加使用）
+# 用法：docker compose -f docker-compose.yml -f docker-compose.loongarch.yml up -d --build
+#
+# 当 Docker Hub 官方镜像在本机出现 exec format error 时启用。
+# 镜像地址以龙芯社区源为准，大赛现场若源有变更请按组委会/赛方文档调整。
+
+services:
+  mariadb:
+    image: ${MARIADB_IMAGE:-loongnix/mariadb:11}
+
+  redis:
+    image: ${REDIS_IMAGE:-loongnix/redis:7}
+
+  backend:
+    build:
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-loongnix/node:20}
+
+  frontend:
+    build:
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-loongnix/node:20}
