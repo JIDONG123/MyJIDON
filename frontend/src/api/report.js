@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { getToken } from '../utils/authStorage'
 
 function authHeaders() {
-  const token = localStorage.getItem('token')
+  const token = getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -49,8 +50,9 @@ export async function downloadPersonalPdf(submissionId) {
   window.URL.revokeObjectURL(url)
 }
 
-export async function downloadClassPdf(classId) {
-  const res = await axios.get(`/api/reports/class/${classId}/pdf`, {
+export async function downloadPracticePdf(params = {}) {
+  const res = await axios.get('/api/reports/practice/pdf', {
+    params,
     responseType: 'blob',
     headers: authHeaders(),
     validateStatus: () => true,
@@ -70,7 +72,8 @@ export async function downloadClassPdf(classId) {
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = filenameFromResponse(res, `班级实训统计_${classId}.pdf`)
+  const scope = params.scopeType || 'practice'
+  a.download = filenameFromResponse(res, `实训统计_${scope}_${params.scopeId || ''}.pdf`)
   a.click()
   window.URL.revokeObjectURL(url)
 }

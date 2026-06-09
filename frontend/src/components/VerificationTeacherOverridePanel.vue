@@ -110,6 +110,12 @@
 import { ref, computed, watch } from 'vue'
 import { getTaskById } from '../api/task'
 import { patchGradingVerification } from '../api/grading'
+import {
+  parseStepChecklist,
+  resolveAiStepJudgment,
+  passedToTeacherChoice,
+  applyStepOverridesToRows,
+} from '../utils/verificationStepUtils'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
@@ -139,56 +145,20 @@ const hadSavedBefore = computed(() => {
   return o && typeof o === 'object' && Object.keys(o).length > 0
 })
 
-function parseStepChecklist(raw) {
-  if (raw == null) return []
-  let list = raw
-  if (typeof list === 'string') {
-    try {
-      list = JSON.parse(list)
-    } catch {
-      return []
-    }
-  }
-  if (!Array.isArray(list)) return []
-  return list.map((x, i) => ({
-    id: x.id != null ? Number(x.id) : i + 1,
-    title: String(x.title || x.name || `步骤${i + 1}`).trim(),
-    required: Boolean(x.required),
-  }))
+function parseStepChecklistLocal(raw) {
+  return parseStepChecklist(raw)
 }
 
 function aiHintForStep(row, vr) {
-  if (!vr?.stepCompleteness) return '（左侧 AI 未输出步骤摘要时可忽略）'
-  const title = row.title
-  const missing = vr.stepCompleteness.missing || []
-  const covered = vr.stepCompleteness.covered || []
-  const mids = vr.missingStepIds
-  if (Array.isArray(mids) && mids.map(Number).includes(Number(row.id))) {
-    return 'AI 将本步骤列入「缺失步骤 id」'
-  }
-  const inMissing = missing.some((m) => m && (String(title).includes(String(m)) || String(m).includes(String(title))))
-  const inCovered = covered.some((c) => c && (String(title).includes(String(c)) || String(c).includes(String(title))))
-  if (inMissing && !inCovered) return 'AI 文本描述：倾向于「未完成」（出现在缺失列表）'
-  if (inCovered && !inMissing) return 'AI 文本描述：倾向于「已完成」（出现在覆盖列表）'
-  return 'AI 未在覆盖/缺失列表中点名本步骤，请结合全文判断'
+  return resolveAiStepJudgment(row, vr).basis
 }
 
 function passedToChoice(passed) {
-  if (passed === true) return 'done'
-  if (passed === false) return 'notdone'
-  return 'inherit'
+  return passedToTeacherChoice(passed)
 }
 
 function applyOverrideToRows(rows, override) {
-  const list = override?.stepOverrides
-  if (!Array.isArray(list)) {
-    return rows.map((r) => ({ ...r, teacherChoice: 'inherit' }))
-  }
-  const map = new Map(list.map((x) => [Number(x.stepId), x.passed]))
-  return rows.map((r) => ({
-    ...r,
-    teacherChoice: map.has(r.id) ? passedToChoice(map.get(r.id)) : 'inherit',
-  }))
+  return applyStepOverridesToRows(rows, override)
 }
 
 function initLogicNotes() {
@@ -243,7 +213,7 @@ async function loadTask() {
     const res = await getTaskById(props.taskId)
     if (res.success && res.data) {
       taskDetail.value = res.data
-      const parsed = parseStepChecklist(res.data.step_checklist)
+      const parsed = parseStepChecklistLocal(res.data.step_checklist)
       let rows = parsed.map((p) => ({
         ...p,
         aiHint: aiHintForStep(p, props.verificationResult),

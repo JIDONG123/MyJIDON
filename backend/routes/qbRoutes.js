@@ -25,6 +25,8 @@ const qbCodeRunLimit = createQbCodeRunLimiter();
 const router = express.Router();
 
 router.get('/admin/questions', authenticateToken, requireRole(['admin']), qbQ.listAdminQuestions);
+router.get('/admin/questions/:id', authenticateToken, requireRole(['admin']), qbQ.getAdminQuestion);
+router.get('/admin/questions/:id/usage', authenticateToken, requireRole(['admin']), qbQ.getAdminQuestionUsage);
 
 router.get('/questions/template', authenticateToken, requireRole(['teacher']), qbQ.downloadTemplate);
 router.post('/questions/import', authenticateToken, requireRole(['teacher']), (req, res, next) => {

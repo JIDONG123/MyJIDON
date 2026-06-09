@@ -31,6 +31,35 @@
   }
 }
 
+/* —— 表格操作列：描边 pill 按钮组（与在线考试页一致） —— */
+.table-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-row-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.el-table .table-row-actions .el-button.is-plain {
+  height: 28px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.el-table .table-row-actions .el-button.is-plain .el-icon {
+  font-size: 14px;
+}
+
+.el-table .el-table__cell:has(.table-row-actions) {
+  vertical-align: middle;
+}
+
 /* —— 主内容区滚动 —— */
 .layout-main-scroll {
   scroll-behavior: smooth;
@@ -93,10 +122,34 @@
 .el-table {
   --el-table-header-bg-color: var(--sg-fill);
   --el-table-header-text-color: var(--sg-text-secondary);
-  --el-table-row-hover-bg-color: rgba(37, 99, 235, 0.04);
+  /* 实色 hover，避免 fixed 列与斑马纹叠 rgba 出现透明断层 */
+  --el-table-row-hover-bg-color: #eef4ff;
   --el-table-border-color: var(--sg-border);
   border-radius: var(--sg-radius-md);
   overflow: hidden;
+}
+
+/* 主表 + 左右固定列：hover 行背景统一 */
+.el-table .el-table__body tr.hover-row > td.el-table__cell,
+.el-table .el-table__fixed-right .el-table__body tr.hover-row > td.el-table__cell,
+.el-table .el-table__fixed-left .el-table__body tr.hover-row > td.el-table__cell {
+  background-color: var(--el-table-row-hover-bg-color) !important;
+}
+
+.el-table--striped .el-table__body tr.el-table__row--striped.hover-row > td.el-table__cell,
+.el-table--striped .el-table__fixed-right .el-table__body tr.el-table__row--striped.hover-row > td.el-table__cell,
+.el-table--striped .el-table__fixed-left .el-table__body tr.el-table__row--striped.hover-row > td.el-table__cell {
+  background-color: var(--el-table-row-hover-bg-color) !important;
+}
+
+/* 固定列阴影改淡，减少与 hover 区交界处的“发虚”感 */
+.el-table .el-table__fixed-right::before,
+.el-table .el-table__fixed-left::before {
+  box-shadow: inset 8px 0 8px -8px rgba(15, 23, 42, 0.08);
+}
+
+.el-table .el-table__fixed-right-patch {
+  background-color: var(--el-table-header-bg-color);
 }
 
 .el-table th.el-table__cell {

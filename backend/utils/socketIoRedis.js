@@ -162,7 +162,7 @@ async function attachSocketIoRedisAdapter(io) {
     );
 
     console.log(
-      `[socket] Redis adapter ON (${maskRedisUrl(url)}) key=${key} → cluster / PM2 / Docker 跨进程广播`
+      `[socket] Redis adapter ON (${maskRedisUrl(url)}) key=${key} → cluster / systemd / Docker 跨进程广播`
     );
     return true;
   } catch (e) {

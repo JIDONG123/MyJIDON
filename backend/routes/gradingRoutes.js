@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const gradingController = require('../controllers/gradingController');
+const gradingJobRoutes = require('./gradingJobRoutes');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const {
   createGradingLimiter,
@@ -28,11 +29,20 @@ router.post(
   gradingController.batchAiGrade
 );
 router.get(
+  '/tasks/:taskId/eligible-submissions',
+  authenticateToken,
+  requireRole(['admin', 'teacher']),
+  gradingController.getEligibleSubmissions
+);
+router.get(
   '/batch-progress/:batchId',
   authenticateToken,
   requireRole(['admin', 'teacher']),
   gradingController.getBatchGradingProgress
 );
+
+router.use(gradingJobRoutes);
+
 router.put(
   '/human/:submissionId',
   authenticateToken,

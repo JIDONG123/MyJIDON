@@ -1,185 +1,246 @@
 <template>
   <div class="page-settings">
-    <div class="settings-bg" aria-hidden="true">
-      <div class="orb orb--a" />
-      <div class="orb orb--b" />
-      <div class="orb orb--c" />
-    </div>
+    <header class="page-head">
+      <h1 class="page-title">我的设置</h1>
+      <p class="page-desc">管理头像、账号安全与联系方式；变更将同步至顶栏与侧栏。</p>
+    </header>
 
-    <div class="settings-inner">
-      <header class="page-head">
-        <h1 class="page-title">我的设置</h1>
-        <p class="page-desc">管理头像、联系方式与个人简介；头像与简介会在侧栏与顶栏同步展示。</p>
-      </header>
+    <div class="settings-layout">
+      <!-- 左侧：个人资料卡 -->
+      <aside class="profile-card">
+        <div class="profile-card__avatar" :class="{ 'is-uploading': uploading }">
+          <UserAvatar
+            :src="userStore.user?.avatarUrl"
+            :name="userStore.user?.realName"
+            :size="88"
+          />
+        </div>
+        <h2 class="profile-card__name">{{ userStore.user?.realName ?? '—' }}</h2>
+        <el-tag size="small" effect="plain" class="profile-card__role">{{ roleLabel }}</el-tag>
 
-      <el-row :gutter="20">
-        <el-col :xs="24" :lg="10">
-          <div class="avatar-panel card-elevated">
-            <div class="avatar-ring" :class="{ uploading: uploading }">
-              <div class="avatar-ring__pulse" />
-              <UserAvatar
-                class="avatar-ring__inner"
-                :src="userStore.user?.avatarUrl"
-                :name="userStore.user?.realName"
-                :size="120"
-              />
+        <template v-if="userStore.user?.role === 'teacher'">
+          <p class="profile-card__meta">
+            <span class="meta-label">学院 / 部门</span>
+            <span class="meta-value">{{ teacherDepartmentDisplay }}</span>
+          </p>
+          <div v-if="managedList.length" class="profile-card__tags">
+            <span class="meta-label">负责班级</span>
+            <div class="tag-list">
+              <el-tag
+                v-for="c in managedList"
+                :key="c.id"
+                size="small"
+                effect="plain"
+                :title="classTagTitle(c)"
+              >
+                {{ classTagLabel(c) }}
+              </el-tag>
             </div>
-            <p class="avatar-name">{{ userStore.user?.realName ?? '—' }}</p>
-            <p class="avatar-role">{{ roleLabel }}</p>
-
-            <el-upload
-              class="upload-wrap"
-              drag
-              :show-file-list="false"
-              accept="image/jpeg,image/png,image/gif,image/webp"
-              :before-upload="beforeUpload"
-            >
-              <el-icon class="upload-icon"><UploadFilled /></el-icon>
-              <div class="upload-text">拖拽图片到此处，或点击上传</div>
-              <div class="upload-hint">JPG / PNG / GIF / WebP，最大 2MB</div>
-            </el-upload>
-            <p v-if="uploading" class="upload-status">
-              <el-icon class="is-loading"><Loading /></el-icon> 正在上传…
-            </p>
           </div>
-        </el-col>
-
-        <el-col :xs="24" :lg="14">
-          <el-card class="info-card card-elevated" shadow="never">
-            <template #header>
-              <span class="card-head-title">基本信息</span>
-            </template>
-            <dl class="info-dl">
-              <div class="info-row">
-                <dt>用户名</dt>
-                <dd>{{ userStore.user?.username ?? '—' }}</dd>
-              </div>
-              <div class="info-row">
-                <dt>邮箱</dt>
-                <dd>{{ userStore.user?.email || '未填写' }}</dd>
-              </div>
-              <template v-if="userStore.user?.role === 'teacher'">
-                <div class="info-row">
-                  <dt>学院 / 部门</dt>
-                  <dd>{{ teacherDepartmentDisplay }}</dd>
-                </div>
-                <div class="info-row info-row--full">
-                  <dt>负责班级</dt>
-                  <dd>
-                    <div v-if="managedList.length" class="tag-list">
-                      <el-tag
-                        v-for="c in managedList"
-                        :key="c.id"
-                        type="info"
-                        effect="plain"
-                        class="tag-animate"
-                        :title="classTagTitle(c)"
-                      >
-                        {{ classTagLabel(c) }}
-                      </el-tag>
-                    </div>
-                    <span v-else class="muted">暂无；请在管理端「班级管理」将班级的负责教师设为您</span>
-                  </dd>
-                </div>
-              </template>
-              <template v-else-if="userStore.user?.role === 'student'">
-                <div class="info-row">
-                  <dt>所在班级</dt>
-                  <dd>
-                    {{
-                      userStore.user?.className ||
-                      userStore.user?.class_name ||
-                      (userStore.user?.classId ? `班级 ID ${userStore.user.classId}` : '') ||
-                      '未分班'
-                    }}
-                    <template
-                      v-if="userStore.user?.classMajor || userStore.user?.class_major"
-                    >
-                      · {{ userStore.user.classMajor || userStore.user.class_major }}
-                      {{ userStore.user.classGrade || userStore.user.class_grade || '' }}
-                    </template>
-                  </dd>
-                </div>
-              </template>
-            </dl>
-          </el-card>
-
-          <el-card
-            v-if="userStore.user?.role === 'student' && classTeacher"
-            class="info-card card-elevated teacher-card"
-            shadow="never"
-          >
-            <template #header>
-              <span class="card-head-title">我的负责教师</span>
-            </template>
-            <div class="teacher-row">
-              <UserAvatar
-                :src="classTeacher.avatarUrl"
-                :name="classTeacher.realName"
-                :size="56"
-                class="teacher-av"
-              />
-              <div class="teacher-meta">
-                <p class="teacher-name">{{ classTeacher.realName }}</p>
-                <p class="teacher-sub">@{{ classTeacher.username }}</p>
-                <p v-if="classTeacher.email" class="teacher-sub">{{ classTeacher.email }}</p>
-                <p v-if="classTeacher.department" class="teacher-sub">{{ classTeacher.department }}</p>
-              </div>
-            </div>
-          </el-card>
-        </el-col>
-      </el-row>
-
-      <el-card v-if="showProfileEdit" class="info-card card-elevated profile-edit-card" shadow="never">
-        <template #header>
-          <span class="card-head-title">联系方式与简介</span>
+          <p v-else class="profile-card__empty">暂无负责班级</p>
         </template>
-        <el-form label-width="100px" class="profile-form">
-          <el-form-item v-if="userStore.user?.role === 'student'" label="学号">
-            <el-input v-model="profileForm.studentNo" maxlength="32" show-word-limit placeholder="选填，用于导出报表等" />
-          </el-form-item>
-          <el-form-item label="手机">
-            <el-input v-model="profileForm.phone" maxlength="20" placeholder="选填" />
-          </el-form-item>
-          <el-form-item label="其它联系">
-            <el-input v-model="profileForm.contactExtra" maxlength="100" placeholder="如微信号等（选填）" />
-          </el-form-item>
-          <el-form-item label="个人简介">
-            <el-input
-              v-model="profileForm.profileBio"
-              type="textarea"
-              :rows="4"
-              maxlength="2000"
-              show-word-limit
-              placeholder="选填；保存后将在顶栏姓名下方简要展示"
+
+        <template v-else-if="userStore.user?.role === 'student'">
+          <p class="profile-card__meta">
+            <span class="meta-label">所在班级</span>
+            <span class="meta-value">{{ studentClassDisplay }}</span>
+          </p>
+        </template>
+
+        <div class="profile-card__upload">
+          <el-upload
+            :show-file-list="false"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            :before-upload="beforeUpload"
+          >
+            <el-button size="small" type="primary" plain :loading="uploading">
+              更换头像
+            </el-button>
+          </el-upload>
+          <p class="upload-hint">JPG / PNG / GIF / WebP，最大 2MB</p>
+        </div>
+      </aside>
+
+      <!-- 右侧：设置内容区 -->
+      <div class="settings-main">
+        <section class="settings-card">
+          <h3 class="settings-card__title">基本信息</h3>
+          <dl class="info-dl">
+            <div class="info-row">
+              <dt>用户名</dt>
+              <dd>{{ userStore.user?.username ?? '—' }}</dd>
+            </div>
+            <div class="info-row">
+              <dt>邮箱</dt>
+              <dd>{{ userStore.user?.email || '未填写' }}</dd>
+            </div>
+            <template v-if="userStore.user?.role === 'teacher'">
+              <div class="info-row">
+                <dt>学院 / 部门</dt>
+                <dd>{{ teacherDepartmentDisplay }}</dd>
+              </div>
+              <div class="info-row">
+                <dt>负责班级</dt>
+                <dd>
+                  <div v-if="managedList.length" class="tag-list tag-list--inline">
+                    <el-tag
+                      v-for="c in managedList"
+                      :key="c.id"
+                      size="small"
+                      effect="plain"
+                      :title="classTagTitle(c)"
+                    >
+                      {{ classTagLabel(c) }}
+                    </el-tag>
+                  </div>
+                  <span v-else class="muted">暂无；请在管理端「班级管理」将班级的负责教师设为您</span>
+                </dd>
+              </div>
+            </template>
+            <template v-else-if="userStore.user?.role === 'student'">
+              <div class="info-row">
+                <dt>所在班级</dt>
+                <dd>{{ studentClassDisplay }}</dd>
+              </div>
+            </template>
+          </dl>
+        </section>
+
+        <section
+          v-if="userStore.user?.role === 'student' && classTeacher"
+          class="settings-card"
+        >
+          <h3 class="settings-card__title">我的负责教师</h3>
+          <div class="teacher-row">
+            <UserAvatar
+              :src="classTeacher.avatarUrl"
+              :name="classTeacher.realName"
+              :size="48"
             />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存资料</el-button>
-          </el-form-item>
-        </el-form>
-      </el-card>
+            <div class="teacher-meta">
+              <p class="teacher-name">{{ classTeacher.realName }}</p>
+              <p class="teacher-sub">@{{ classTeacher.username }}</p>
+              <p v-if="classTeacher.email" class="teacher-sub">{{ classTeacher.email }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="showProfileEdit" class="settings-card">
+          <h3 class="settings-card__title">账号安全</h3>
+          <el-form label-width="96px" class="compact-form" @submit.prevent>
+            <el-form-item label="用户名">
+              <el-input v-model="credForm.username" maxlength="64" autocomplete="off" />
+            </el-form-item>
+            <el-form-item label="当前密码">
+              <el-input
+                v-model="credForm.currentPassword"
+                type="password"
+                show-password
+                autocomplete="current-password"
+                placeholder="修改用户名或密码时必填"
+              />
+            </el-form-item>
+            <el-form-item label="新密码">
+              <el-input
+                v-model="credForm.newPassword"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                placeholder="不修改请留空"
+              />
+            </el-form-item>
+            <el-form-item label="确认新密码">
+              <el-input
+                v-model="credForm.confirmPassword"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                placeholder="再次输入新密码"
+              />
+            </el-form-item>
+            <p class="form-hint">
+              不修改密码时，新密码与确认新密码可留空。密码至少 6 位，建议包含字母与数字。
+            </p>
+            <el-form-item class="form-actions">
+              <el-button type="primary" :loading="savingCreds" @click="saveCredentials">
+                保存账号安全设置
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </section>
+
+        <section v-if="showProfileEdit" class="settings-card">
+          <h3 class="settings-card__title">联系方式与简介</h3>
+          <el-form label-width="96px" class="compact-form" @submit.prevent>
+            <el-form-item v-if="userStore.user?.role === 'student'" label="学号">
+              <el-input
+                v-model="profileForm.studentNo"
+                maxlength="32"
+                show-word-limit
+                placeholder="选填，用于导出报表等"
+              />
+            </el-form-item>
+            <el-form-item label="手机">
+              <el-input v-model="profileForm.phone" maxlength="20" placeholder="选填" />
+            </el-form-item>
+            <el-form-item label="其他联系方式">
+              <el-input
+                v-model="profileForm.contactExtra"
+                maxlength="100"
+                placeholder="如微信号等（选填）"
+              />
+            </el-form-item>
+            <el-form-item label="个人简介">
+              <el-input
+                v-model="profileForm.profileBio"
+                type="textarea"
+                :rows="4"
+                maxlength="2000"
+                show-word-limit
+                class="bio-textarea"
+                placeholder="选填；保存后将在顶栏姓名下方简要展示"
+              />
+            </el-form-item>
+            <el-form-item class="form-actions">
+              <el-button type="primary" :loading="savingProfile" @click="saveProfile">
+                保存个人资料
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </section>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, reactive, watch, onMounted } from 'vue'
-import { UploadFilled, Loading } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../../stores/user'
-import { uploadMyAvatar, updateMyProfile } from '../../api/user'
+import { uploadMyAvatar, updateMyProfile, updateMyCredentials } from '../../api/user'
 import UserAvatar from '../../components/UserAvatar.vue'
+import { validatePasswordPlaintext } from '../../utils/passwordPolicy'
+import { logoutAndGoLogin } from '../../utils/authLogout'
 
+const router = useRouter()
 const userStore = useUserStore()
 const uploading = ref(false)
 const savingProfile = ref(false)
+const savingCreds = ref(false)
 
 const profileForm = reactive({
   studentNo: '',
   phone: '',
   contactExtra: '',
   profileBio: '',
+})
+
+const credForm = reactive({
+  username: '',
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: '',
 })
 
 const showProfileEdit = computed(() => ['teacher', 'student'].includes(userStore.user?.role))
@@ -192,9 +253,65 @@ watch(
     profileForm.phone = u.phone ?? ''
     profileForm.contactExtra = u.contactExtra ?? u.contact_extra ?? ''
     profileForm.profileBio = u.profileBio ?? u.profile_bio ?? ''
+    credForm.username = u.username ?? ''
   },
   { immediate: true }
 )
+
+const saveCredentials = async () => {
+  if (!credForm.currentPassword) {
+    ElMessage.error('请输入当前密码以确认身份')
+    return
+  }
+  const usernameChanged = credForm.username.trim() !== (userStore.user?.username ?? '')
+  const wantsPassword = !!credForm.newPassword
+
+  if (!usernameChanged && !wantsPassword) {
+    ElMessage.warning('未修改用户名或密码')
+    return
+  }
+  if (wantsPassword) {
+    if (credForm.newPassword !== credForm.confirmPassword) {
+      ElMessage.error('两次输入的新密码不一致')
+      return
+    }
+    const pv = validatePasswordPlaintext(credForm.newPassword)
+    if (!pv.ok) {
+      ElMessage.error(pv.message)
+      return
+    }
+  }
+
+  savingCreds.value = true
+  try {
+    const payload = {
+      username: credForm.username.trim(),
+      currentPassword: credForm.currentPassword,
+    }
+    if (wantsPassword) {
+      payload.newPassword = credForm.newPassword
+      payload.confirmPassword = credForm.confirmPassword
+    }
+    const res = await updateMyCredentials(payload)
+    if (res.success) {
+      ElMessage.success(res.message || '账号安全设置已保存')
+      credForm.currentPassword = ''
+      credForm.newPassword = ''
+      credForm.confirmPassword = ''
+      if (res.requireRelogin) {
+        await logoutAndGoLogin(router, { showToast: false })
+      } else {
+        await userStore.fetchUserInfo()
+      }
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || '保存失败')
+  } finally {
+    savingCreds.value = false
+  }
+}
 
 const saveProfile = async () => {
   savingProfile.value = true
@@ -209,7 +326,7 @@ const saveProfile = async () => {
     }
     const res = await updateMyProfile(payload)
     if (res.success) {
-      ElMessage.success('资料已保存')
+      ElMessage.success('个人资料已保存')
       await userStore.fetchUserInfo()
     } else {
       ElMessage.error(res.message || '保存失败')
@@ -240,6 +357,18 @@ const teacherDepartmentDisplay = computed(() => {
   const d = u.department ?? u.department_name ?? u.dept
   if (d != null && String(d).trim() !== '') return String(d).trim()
   return '未填写（可在管理端用户管理中补充）'
+})
+
+const studentClassDisplay = computed(() => {
+  const u = userStore.user
+  if (!u) return '—'
+  const name =
+    u.className ||
+    u.class_name ||
+    (u.classId ? `班级 ID ${u.classId}` : '') ||
+    '未分班'
+  const extra = [u.classMajor || u.class_major, u.classGrade || u.class_grade].filter(Boolean)
+  return extra.length ? `${name} · ${extra.join(' ')}` : name
 })
 
 function classTagLabel(c) {
@@ -292,221 +421,159 @@ onMounted(() => {
 
 <style scoped>
 .page-settings {
-  position: relative;
-  min-height: calc(100vh - 120px);
-  max-width: 1100px;
+  max-width: 980px;
   margin: 0 auto;
-}
-
-.settings-bg {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  overflow: hidden;
-}
-
-.orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(72px);
-  opacity: 0.22;
-  animation: float-orb 18s ease-in-out infinite;
-}
-
-.orb--a {
-  width: 320px;
-  height: 320px;
-  background: linear-gradient(135deg, #bae6fd, #7dd3fc);
-  top: -80px;
-  right: 10%;
-  animation-delay: 0s;
-}
-
-.orb--b {
-  width: 260px;
-  height: 260px;
-  background: linear-gradient(135deg, #cbd5e1, #e2e8f0);
-  bottom: 10%;
-  left: -40px;
-  animation-delay: -6s;
-}
-
-.orb--c {
-  width: 200px;
-  height: 200px;
-  background: linear-gradient(135deg, #99f6e4, #5eead4);
-  top: 40%;
-  left: 40%;
-  animation-delay: -12s;
-}
-
-@keyframes float-orb {
-  0%,
-  100% {
-    transform: translate(0, 0) scale(1);
-  }
-  33% {
-    transform: translate(24px, -20px) scale(1.05);
-  }
-  66% {
-    transform: translate(-16px, 16px) scale(0.95);
-  }
-}
-
-.settings-inner {
-  position: relative;
-  z-index: 1;
+  padding: 4px 16px 24px;
+  min-height: calc(100vh - 140px);
+  background: #f3f6fa;
+  border-radius: 8px;
 }
 
 .page-head {
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .page-title {
-  margin: 0 0 8px;
-  font-size: 26px;
+  margin: 0 0 6px;
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(120deg, #1d2129 0%, #4e5969 55%, #1677ff 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #0f172a;
 }
 
 .page-desc {
   margin: 0;
-  font-size: 14px;
-  color: var(--sg-text-secondary);
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
 }
 
-.card-elevated {
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+.settings-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
 }
 
-.avatar-panel {
-  padding: 28px 24px 32px;
+/* 左侧资料卡 */
+.profile-card {
+  position: sticky;
+  top: 16px;
+  padding: 20px 18px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
   text-align: center;
 }
 
-.avatar-ring {
-  position: relative;
-  width: 140px;
-  height: 140px;
-  margin: 0 auto 16px;
+.profile-card__avatar {
   display: flex;
-  align-items: center;
   justify-content: center;
+  margin-bottom: 12px;
 }
 
-.avatar-ring__pulse {
-  position: absolute;
-  inset: 0;
+.profile-card__avatar.is-uploading {
+  opacity: 0.65;
+}
+
+.profile-card__avatar :deep(.user-avatar) {
   border-radius: 50%;
-  border: 2px solid rgba(22, 119, 255, 0.28);
-  animation: pulse-ring 2.4s ease-out infinite;
 }
 
-.avatar-ring.uploading .avatar-ring__pulse {
-  animation-duration: 1s;
-  border-color: rgba(34, 211, 238, 0.6);
-}
-
-@keyframes pulse-ring {
-  0% {
-    transform: scale(1);
-    opacity: 0.9;
-  }
-  100% {
-    transform: scale(1.35);
-    opacity: 0;
-  }
-}
-
-.avatar-ring__inner {
-  position: relative;
-  z-index: 1;
-}
-
-.avatar-name {
-  margin: 0 0 4px;
-  font-size: 18px;
+.profile-card__name {
+  margin: 0 0 8px;
+  font-size: 17px;
   font-weight: 600;
-  color: var(--sg-text);
+  color: #0f172a;
 }
 
-.avatar-role {
-  margin: 0 0 20px;
+.profile-card__role {
+  margin-bottom: 14px;
+}
+
+.profile-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+  text-align: left;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.profile-card__tags {
+  text-align: left;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.profile-card__empty {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: left;
+}
+
+.meta-label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.meta-value {
   font-size: 13px;
-  color: var(--sg-text-secondary);
+  color: #334155;
+  line-height: 1.45;
 }
 
-.upload-wrap {
-  width: 100%;
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
-.upload-wrap :deep(.el-upload-dragger) {
-  border-radius: 12px;
-  border-style: dashed;
-  background: rgba(248, 250, 252, 0.9);
-  transition:
-    border-color 0.25s ease,
-    background 0.25s ease,
-    transform 0.2s ease;
+.tag-list--inline {
+  margin-top: 0;
 }
 
-.upload-wrap :deep(.el-upload-dragger:hover) {
-  border-color: var(--sg-primary);
-  background: rgba(239, 246, 255, 0.95);
-  transform: translateY(-2px);
-}
-
-.upload-icon {
-  font-size: 36px;
-  color: var(--sg-primary);
-  margin-bottom: 8px;
-}
-
-.upload-text {
-  font-size: 14px;
-  color: var(--sg-text);
-  margin-bottom: 4px;
+.profile-card__upload {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid #f1f5f9;
 }
 
 .upload-hint {
-  font-size: 12px;
-  color: var(--sg-text-placeholder);
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
 }
 
-.upload-status {
-  margin: 12px 0 0;
-  font-size: 13px;
-  color: var(--sg-primary);
+/* 右侧设置区 */
+.settings-main {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.profile-edit-card {
-  margin-top: 8px;
+.settings-card {
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
 }
 
-.profile-form {
-  max-width: 640px;
-}
-
-.info-card {
-  margin-bottom: 20px;
-}
-
-.card-head-title {
-  font-weight: 600;
+.settings-card__title {
+  margin: 0 0 12px;
   font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
 }
 
 .info-dl {
@@ -515,101 +582,103 @@ onMounted(() => {
 
 .info-row {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--sg-border);
-  font-size: 14px;
+  grid-template-columns: 96px 1fr;
+  gap: 8px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .info-row:last-child {
   border-bottom: none;
+  padding-bottom: 0;
 }
 
-.info-row--full {
-  grid-template-columns: 120px 1fr;
+.info-row:first-child {
+  padding-top: 0;
 }
 
 .info-row dt {
   margin: 0;
-  color: var(--sg-text-secondary);
+  color: #64748b;
   font-weight: 500;
 }
 
 .info-row dd {
   margin: 0;
-  color: var(--sg-text);
+  color: #334155;
 }
 
 .muted {
-  color: var(--sg-text-placeholder);
+  color: #94a3b8;
+  font-size: 12px;
 }
 
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.compact-form :deep(.el-form-item) {
+  margin-bottom: 14px;
 }
 
-.tag-animate {
-  animation: tag-in 0.45s ease backwards;
+.compact-form :deep(.el-form-item__label) {
+  color: #64748b;
+  font-size: 13px;
+  padding-right: 8px;
 }
 
-.tag-animate:nth-child(1) {
-  animation-delay: 0.05s;
-}
-.tag-animate:nth-child(2) {
-  animation-delay: 0.1s;
-}
-.tag-animate:nth-child(3) {
-  animation-delay: 0.15s;
+.compact-form :deep(.el-input__wrapper),
+.compact-form :deep(.el-textarea__inner) {
+  border-radius: 8px;
 }
 
-@keyframes tag-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.bio-textarea :deep(.el-textarea__inner) {
+  min-height: 120px !important;
+  max-height: 120px;
+  resize: none;
 }
 
-.teacher-card {
-  border-left: 3px solid var(--sg-primary);
+.form-hint {
+  margin: -4px 0 12px 96px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.form-actions {
+  margin-bottom: 0 !important;
+  padding-top: 4px;
 }
 
 .teacher-row {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.teacher-av {
-  animation: teacher-av-in 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
-}
-
-@keyframes teacher-av-in {
-  from {
-    opacity: 0;
-    transform: scale(0.8) rotate(-8deg);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) rotate(0);
-  }
+  align-items: center;
+  gap: 12px;
 }
 
 .teacher-name {
-  margin: 0 0 4px;
-  font-size: 16px;
+  margin: 0 0 2px;
+  font-size: 14px;
   font-weight: 600;
+  color: #0f172a;
 }
 
 .teacher-sub {
-  margin: 0 0 2px;
-  font-size: 13px;
-  color: var(--sg-text-secondary);
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+@media (max-width: 768px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-card {
+    position: static;
+  }
+
+  .form-hint {
+    margin-left: 0;
+  }
 }
 </style>

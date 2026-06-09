@@ -1,10 +1,12 @@
 <template>
-  <div class="qb-ws">
+  <div class="qb-ws" :class="{ 'qb-ws--exam': variant === 'exam' }">
     <header class="qb-ws-top">
       <div class="qb-ws-top-left">
         <div class="qb-ws-title-row">
           <span class="qb-ws-title">{{ title }}</span>
-          <el-tag v-if="statusLabel" size="small" :type="statusTagType" effect="plain" class="qb-ws-status-tag">{{ statusLabel }}</el-tag>
+          <el-tag v-if="statusLabel" size="small" :type="statusTagType" effect="plain" class="qb-ws-status-tag">
+            {{ statusLabel }}
+          </el-tag>
         </div>
         <div class="qb-ws-meta-lines">
           <span v-for="(line, idx) in subtitleLinesFiltered" :key="idx" class="qb-ws-meta-line">{{ line }}</span>
@@ -14,10 +16,18 @@
       <div class="qb-ws-top-mid">
         <div class="qb-ws-progress-row">
           <span class="qb-ws-progress-label">进度 {{ answeredCount }} / {{ totalQuestions }}</span>
-          <el-progress :percentage="progressPct" :stroke-width="8" :show-text="false" class="qb-ws-progress-bar" />
+          <el-progress
+            :percentage="progressPct"
+            :stroke-width="8"
+            :show-text="false"
+            class="qb-ws-progress-bar"
+            :color="variant === 'exam' ? '#1677ff' : undefined"
+          />
         </div>
         <div class="qb-ws-mid-sub">
           <span class="qb-ws-time">用时 {{ elapsedText }}</span>
+          <span v-if="remainingText" class="qb-ws-remain">剩余 {{ remainingText }}</span>
+          <span v-if="tabSwitchText" class="qb-ws-tab-warn">{{ tabSwitchText }}</span>
           <span v-if="saving" class="qb-ws-saving">正在暂存…</span>
           <slot name="toolbar-mid-extra" />
         </div>
@@ -25,17 +35,27 @@
       <div class="qb-ws-top-right">
         <el-button v-if="!readOnly" :loading="saving" @click="$emit('save')">暂存</el-button>
         <el-button v-if="!readOnly" type="primary" :loading="submitting" @click="$emit('submit')">提交</el-button>
-        <el-button @click="$emit('exit')">退出</el-button>
+        <el-button :type="variant === 'exam' ? 'danger' : 'default'" plain @click="$emit('exit')">退出</el-button>
       </div>
     </header>
+
+    <div v-if="ruleBannerText" class="qb-ws-rule-banner" role="note">
+      <span class="qb-ws-rule-banner__label">考试规则：</span>
+      <span class="qb-ws-rule-banner__text">{{ ruleBannerText }}</span>
+    </div>
 
     <div class="qb-ws-body">
       <aside class="qb-ws-nav" :class="{ 'qb-ws-nav--collapsed': navCollapsed }">
         <div class="qb-ws-nav-head">
-          <span class="qb-ws-nav-title">题号</span>
+          <span class="qb-ws-nav-title">{{ variant === 'exam' ? '题号导航' : '题号' }}</span>
           <el-button text type="primary" class="qb-ws-collapse-btn" @click="navCollapsed = !navCollapsed">
             {{ navCollapsed ? '展开' : '收起' }}
           </el-button>
+        </div>
+        <div v-if="variant === 'exam' && !navCollapsed" class="qb-ws-nav-stats">
+          <span class="nav-stat nav-stat--done">已答 {{ answeredCount }}</span>
+          <span class="nav-stat nav-stat--todo">未答 {{ unansweredCount }}</span>
+          <span class="nav-stat nav-stat--flag">标记 {{ flaggedCount }}</span>
         </div>
         <div v-show="!navCollapsed" class="qb-ws-nav-grid-wrap">
           <div class="qb-ws-nav-grid">
@@ -49,6 +69,7 @@
               @click="goIndex(idx - 1)"
             >
               {{ idx }}
+              <span v-if="isFlaggedAt(idx - 1)" class="nav-cell__flag" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -66,7 +87,7 @@
       <div class="qb-ws-bottom-left">
         <el-button :disabled="currentIndex <= 0" @click="goIndex(currentIndex - 1)">上一题</el-button>
         <el-button v-if="!readOnly" :type="flagCurrent ? 'warning' : 'default'" plain @click="toggleFlag">
-          {{ flagCurrent ? '取消标记' : '标记待查' }}
+          {{ flagCurrent ? '取消标记' : flagButtonText }}
         </el-button>
         <el-button :disabled="currentIndex >= totalQuestions - 1" type="primary" @click="goIndex(currentIndex + 1)">
           下一题
@@ -82,21 +103,23 @@ import { ref, computed } from 'vue'
 
 const props = defineProps({
   title: { type: String, default: '' },
-  /** 副标题行（课程/班级、场景说明等） */
   subtitleLines: { type: Array, default: () => [] },
   deadlineText: { type: String, default: '' },
   totalQuestions: { type: Number, default: 0 },
   currentIndex: { type: Number, default: 0 },
   answeredCount: { type: Number, default: 0 },
   elapsedText: { type: String, default: '00:00' },
+  remainingText: { type: String, default: '' },
+  tabSwitchCount: { type: Number, default: 0 },
+  flaggedCount: { type: Number, default: 0 },
   statusLabel: { type: String, default: '' },
   statusTagType: { type: String, default: 'info' },
   readOnly: { type: Boolean, default: false },
   saving: { type: Boolean, default: false },
   submitting: { type: Boolean, default: false },
-  /** (i: number) => boolean */
+  variant: { type: String, default: 'default' },
+  ruleBannerText: { type: String, default: '' },
   isAnsweredAt: { type: Function, required: true },
-  /** (i: number) => boolean */
   isFlaggedAt: { type: Function, required: true },
 })
 
@@ -120,7 +143,16 @@ const progressPct = computed(() => {
   return Math.min(100, Math.round((props.answeredCount / t) * 100))
 })
 
+const unansweredCount = computed(() => Math.max(0, props.totalQuestions - props.answeredCount))
+
 const flagCurrent = computed(() => props.isFlaggedAt(props.currentIndex))
+
+const flagButtonText = computed(() => (props.variant === 'exam' ? '标记本题' : '标记待查'))
+
+const tabSwitchText = computed(() => {
+  if (!props.tabSwitchCount) return ''
+  return `切屏 ${props.tabSwitchCount} 次`
+})
 
 function goIndex(i) {
   const t = props.totalQuestions
@@ -143,6 +175,7 @@ function navCellClass(i) {
     'nav-cell--answered': ans && !cur,
     'nav-cell--unanswered': !ans && !cur,
     'nav-cell--flagged': fl,
+    'nav-cell--exam': props.variant === 'exam',
   }
 }
 </script>
@@ -159,6 +192,11 @@ function navCellClass(i) {
   overflow: hidden;
 }
 
+.qb-ws--exam {
+  background: #eef2f7;
+  border: none;
+}
+
 .qb-ws-top {
   flex-shrink: 0;
   display: grid;
@@ -169,6 +207,13 @@ function navCellClass(i) {
   background: rgba(255, 255, 255, 0.97);
   border-bottom: 1px solid var(--sg-border, #e5e7eb);
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+.qb-ws--exam .qb-ws-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 12px 18px;
 }
 
 .qb-ws-top-left {
@@ -190,6 +235,11 @@ function navCellClass(i) {
   letter-spacing: -0.01em;
   line-height: 1.35;
   min-width: 0;
+}
+
+.qb-ws--exam .qb-ws-title {
+  font-size: 17px;
+  color: #0f172a;
 }
 
 .qb-ws-status-tag {
@@ -247,10 +297,21 @@ function navCellClass(i) {
   color: var(--sg-text-secondary);
 }
 
-.qb-ws-time {
+.qb-ws-time,
+.qb-ws-remain {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   color: var(--sg-text);
+}
+
+.qb-ws-remain {
+  color: #1677ff;
+  font-weight: 600;
+}
+
+.qb-ws-tab-warn {
+  color: #b45309;
+  font-weight: 600;
 }
 
 .qb-ws-saving {
@@ -263,6 +324,24 @@ function navCellClass(i) {
   justify-content: flex-end;
   gap: 8px;
   align-items: center;
+}
+
+.qb-ws-rule-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 18px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #92400e;
+}
+
+.qb-ws-rule-banner__label {
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .qb-ws-body {
@@ -284,6 +363,11 @@ function navCellClass(i) {
   transition: width 0.2s ease;
 }
 
+.qb-ws--exam .qb-ws-nav {
+  border-radius: 0;
+  box-shadow: 1px 0 0 rgba(15, 23, 42, 0.04);
+}
+
 .qb-ws-nav--collapsed {
   width: 72px;
 }
@@ -301,6 +385,38 @@ function navCellClass(i) {
   font-size: 13px;
   font-weight: 600;
   color: var(--sg-text-secondary);
+}
+
+.qb-ws-nav-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.nav-stat {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.nav-stat--done {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.nav-stat--todo {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.nav-stat--flag {
+  background: #fff7ed;
+  color: #ea580c;
 }
 
 .qb-ws-collapse-btn {
@@ -325,11 +441,8 @@ function navCellClass(i) {
   gap: 6px;
 }
 
-.qb-ws-nav--collapsed .qb-ws-nav-grid {
-  display: none;
-}
-
 .nav-cell {
+  position: relative;
   aspect-ratio: 1;
   min-width: 0;
   border-radius: 8px;
@@ -363,20 +476,43 @@ function navCellClass(i) {
   color: var(--el-color-primary-dark-2);
 }
 
+.nav-cell--exam.nav-cell--answered {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #16a34a;
+}
+
 .nav-cell--flagged {
   box-shadow: inset 0 0 0 2px #f59e0b;
+}
+
+.nav-cell__flag {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ea580c;
 }
 
 .nav-cell--current {
   border-color: var(--el-color-primary);
   background: #fff;
   color: var(--el-color-primary);
-  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.35);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.25);
+}
+
+.nav-cell--exam.nav-cell--current {
+  background: #eff6ff;
+  border-color: #1677ff;
+  color: #1677ff;
+  font-weight: 700;
 }
 
 .nav-cell--current.nav-cell--flagged {
   box-shadow:
-    0 0 0 2px rgba(20, 184, 166, 0.35),
+    0 0 0 2px rgba(22, 119, 255, 0.25),
     inset 0 0 0 2px #f59e0b;
 }
 
@@ -398,6 +534,10 @@ function navCellClass(i) {
   background: linear-gradient(180deg, #fafbfc 0%, #f4f6f8 100%);
 }
 
+.qb-ws--exam .qb-ws-main {
+  background: #eef2f7;
+}
+
 .qb-ws-main-inner {
   flex: 1;
   min-height: 0;
@@ -415,6 +555,10 @@ function navCellClass(i) {
   background: rgba(255, 255, 255, 0.98);
   border-top: 1px solid var(--sg-border, #e5e7eb);
   box-shadow: 0 -2px 10px rgba(15, 23, 42, 0.04);
+}
+
+.qb-ws--exam .qb-ws-bottom {
+  padding: 12px 18px;
 }
 
 .qb-ws-bottom-left {

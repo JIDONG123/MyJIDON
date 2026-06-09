@@ -11,6 +11,7 @@ const {
   finalizeGradingFromLlmJson,
 } = require('./gradingNormalize');
 const cache = require('./cacheService');
+const { buildCurriculumPromptBlock } = require('./taskGradingContext');
 
 const STEP2_TTL = parseInt(process.env.CACHE_TTL_LC_STEP2 || '1800', 10);
 
@@ -107,7 +108,8 @@ async function step2RagAlign(task, ragContext, s1, progressMeta) {
   "gapVsRequirements": ["学生成果与任务要求的主要差距"]
 }`;
   const kb = ragStr ? `【教师知识库片段】\n${ragStr.slice(0, 7500)}` : '（未提供知识库片段）';
-  const user = `【任务标题】${task.title || ''}\n【任务要求】\n${req}\n【评分说明】\n${crit}\n${kb}\n【解析摘要】\n${JSON.stringify(s1 || {}).slice(0, 3000)}`;
+  const curriculumBlock = buildCurriculumPromptBlock(task);
+  const user = `【任务标题】${task.title || ''}\n【任务要求】\n${req}\n【评分说明】\n${crit}${curriculumBlock}\n${kb}\n【解析摘要】\n${JSON.stringify(s1 || {}).slice(0, 3000)}`;
 
   const raw = await chatCompletion(
     [
@@ -199,7 +201,8 @@ async function step4Aggregate(
       ? `\n【知识库】\n${String(ragContext).trim().slice(0, 6000)}\n`
       : '';
 
-  const user = `【任务】${task.title || ''}\n【要求】\n${reqText}\n【评分说明】\n${scoreCrit || '（未填）'}\n【企业标准】\n${entStd || '（未配置）'}\n【维度】\n${metricsJson}\n${kbSection}\n【前序-解析】\n${JSON.stringify(
+  const curriculumBlock = buildCurriculumPromptBlock(task);
+  const user = `【任务】${task.title || ''}\n【要求】\n${reqText}\n【评分说明】\n${scoreCrit || '（未填）'}\n【企业标准】\n${entStd || '（未配置）'}${curriculumBlock}\n【维度】\n${metricsJson}\n${kbSection}\n【前序-解析】\n${JSON.stringify(
     s1 || {}
   ).slice(0, 2500)}\n【前序-标准对齐】\n${JSON.stringify(s2 || {}).slice(0, 2500)}\n【前序-维度草稿】\n${JSON.stringify(
     s3 || {}

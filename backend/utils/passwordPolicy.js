@@ -64,10 +64,92 @@ async function verifyPassword(plain, storedHash) {
   }
 }
 
+/**
+ * @returns {Promise<{ ok: true, hash: string, plain: string } | { ok: false, message: string }>}
+ */
+async function preparePasswordStorage(plain) {
+  const hp = await hashPassword(plain);
+  if (!hp.ok) {
+    return hp;
+  }
+  return { ok: true, hash: hp.hash, plain: String(plain) };
+}
+
+/**
+ * 初始密码（学号）可仅为数字，仍使用 bcrypt 加密存储
+ * @param {unknown} plain
+ */
+function validateInitialStudentPassword(plain) {
+  if (plain == null || String(plain).trim() === '') {
+    return { ok: false, message: '学号不能为空，无法生成初始密码' };
+  }
+  const s = String(plain).trim();
+  if (s.length < 4) {
+    return { ok: false, message: '学号过短，无法作为初始密码' };
+  }
+  if (s.length > 64) {
+    return { ok: false, message: '学号过长' };
+  }
+  return { ok: true };
+}
+
+/**
+ * @returns {Promise<{ ok: true, hash: string } | { ok: false, message: string }>}
+ */
+async function hashInitialStudentPassword(plain) {
+  const v = validateInitialStudentPassword(plain);
+  if (!v.ok) return v;
+  try {
+    const hash = await bcrypt.hash(String(plain).trim(), BCRYPT_ROUNDS);
+    return { ok: true, hash };
+  } catch (e) {
+    console.error('[passwordPolicy] hashInitialStudentPassword failed:', e.message);
+    return { ok: false, message: '密码处理失败，请稍后重试' };
+  }
+}
+
+/**
+ * 初始密码（工号）校验
+ * @param {unknown} plain
+ */
+function validateInitialTeacherPassword(plain) {
+  if (plain == null || String(plain).trim() === '') {
+    return { ok: false, message: '工号不能为空，无法生成初始密码' };
+  }
+  const s = String(plain).trim();
+  if (s.length < 4) {
+    return { ok: false, message: '工号过短，无法作为初始密码' };
+  }
+  if (s.length > 64) {
+    return { ok: false, message: '工号过长' };
+  }
+  return { ok: true };
+}
+
+/**
+ * @returns {Promise<{ ok: true, hash: string } | { ok: false, message: string }>}
+ */
+async function hashInitialTeacherPassword(plain) {
+  const v = validateInitialTeacherPassword(plain);
+  if (!v.ok) return v;
+  try {
+    const hash = await bcrypt.hash(String(plain).trim(), BCRYPT_ROUNDS);
+    return { ok: true, hash };
+  } catch (e) {
+    console.error('[passwordPolicy] hashInitialTeacherPassword failed:', e.message);
+    return { ok: false, message: '密码处理失败，请稍后重试' };
+  }
+}
+
 module.exports = {
   BCRYPT_ROUNDS,
   PASSWORD_HINT,
   validatePasswordPlaintext,
+  validateInitialStudentPassword,
+  validateInitialTeacherPassword,
   hashPassword,
+  hashInitialStudentPassword,
+  hashInitialTeacherPassword,
   verifyPassword,
+  preparePasswordStorage,
 };

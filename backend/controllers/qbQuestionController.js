@@ -51,8 +51,10 @@ async function listQuestions(req, res) {
     const total = Number(cnt[0].n) || 0;
 
     const [rows] = await pool.query(
-      `SELECT q.id, q.type, q.stem, q.default_score, q.difficulty, q.course_label, q.knowledge_tags, q.created_at,
-              (SELECT COUNT(*) FROM qb_question_usage u WHERE u.question_id = q.id) AS usage_count
+      `SELECT q.id, q.type, q.stem, q.default_score, q.difficulty, q.course_label, q.knowledge_tags,
+              q.reference_answer, q.answer_json, q.created_at,
+              (SELECT COUNT(*) FROM qb_question_usage u WHERE u.question_id = q.id) AS usage_count,
+              (SELECT MAX(u.created_at) FROM qb_question_usage u WHERE u.question_id = q.id) AS last_used_at
        FROM qb_questions q
        ${where}
        ORDER BY q.id DESC
@@ -320,8 +322,11 @@ async function listAdminQuestions(req, res) {
     const total = Number(cnt[0].n) || 0;
 
     const [rows] = await pool.query(
-      `SELECT q.id, q.teacher_id, q.type, q.stem, q.default_score, q.difficulty, q.course_label, q.knowledge_tags, q.created_at,
-              u.real_name AS teacher_name, u.username AS teacher_username
+      `SELECT q.id, q.teacher_id, q.type, q.stem, q.default_score, q.difficulty, q.course_label, q.knowledge_tags,
+              q.reference_answer, q.answer_json, q.created_at,
+              u.real_name AS teacher_name, u.username AS teacher_username,
+              (SELECT COUNT(*) FROM qb_question_usage uu WHERE uu.question_id = q.id) AS usage_count,
+              (SELECT MAX(uu.created_at) FROM qb_question_usage uu WHERE uu.question_id = q.id) AS last_used_at
        FROM qb_questions q
        LEFT JOIN users u ON u.id = q.teacher_id
        ${where}
@@ -337,14 +342,57 @@ async function listAdminQuestions(req, res) {
   }
 }
 
+async function getAdminQuestion(req, res) {
+  try {
+    const id = toInt(req.params.id);
+    const [rows] = await pool.query(
+      `SELECT q.*, u.real_name AS teacher_name, u.username AS teacher_username,
+              (SELECT COUNT(*) FROM qb_question_usage uu WHERE uu.question_id = q.id) AS usage_count,
+              (SELECT MAX(uu.created_at) FROM qb_question_usage uu WHERE uu.question_id = q.id) AS last_used_at
+       FROM qb_questions q
+       LEFT JOIN users u ON u.id = q.teacher_id
+       WHERE q.id = ? AND q.deleted_at IS NULL`,
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, message: '题目不存在' });
+    res.json({ success: true, data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, message: '查询失败' });
+  }
+}
+
+async function getAdminQuestionUsage(req, res) {
+  try {
+    const id = toInt(req.params.id);
+    const [own] = await pool.query(`SELECT id FROM qb_questions WHERE id = ? AND deleted_at IS NULL`, [id]);
+    if (!own.length) return res.status(404).json({ success: false, message: '题目不存在' });
+    const [rows] = await pool.query(
+      `SELECT u.ref_type, u.ref_id, u.created_at,
+              CASE u.ref_type
+                WHEN 'practice' THEN (SELECT title FROM qb_practices p WHERE p.id = u.ref_id)
+                WHEN 'exam' THEN (SELECT title FROM qb_exams e WHERE e.id = u.ref_id)
+              END AS ref_title
+       FROM qb_question_usage u WHERE u.question_id = ?
+       ORDER BY u.id DESC
+       LIMIT 200`,
+      [id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: '查询失败' });
+  }
+}
+
 module.exports = {
   listQuestions,
   listAdminQuestions,
   getQuestion,
+  getAdminQuestion,
   createQuestion,
   updateQuestion,
   deleteQuestion,
   questionUsage,
+  getAdminQuestionUsage,
   downloadTemplate,
   importQuestions,
   recordUsage,

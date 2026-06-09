@@ -22,9 +22,15 @@ function logConnectionLine(line) {
 
 async function initSocketServer(httpServer) {
   const { Server } = require('socket.io');
+  const isProd = process.env.NODE_ENV === 'production';
+  const enableSocketCors =
+    process.env.ENABLE_BACKEND_CORS === '1' ||
+    process.env.ENABLE_BACKEND_CORS === 'true' ||
+    (!isProd && process.env.ENABLE_BACKEND_CORS !== '0');
+
   const io = new Server(httpServer, {
     path: '/socket.io',
-    cors: { origin: true, credentials: true },
+    cors: enableSocketCors ? { origin: true, credentials: true } : undefined,
     transports: ['websocket', 'polling'],
     connectionStateRecovery: {},
     pingTimeout: 45000,
@@ -49,6 +55,12 @@ async function initSocketServer(httpServer) {
       socket.data.userId = Number(decoded.id);
       socket.data.username = decoded.username;
       socket.data.role = decoded.role;
+      socket.data.sessionId = decoded.sessionId || null;
+      const { validateUserSession } = require('../services/userSessionService');
+      const sessionCheck = await validateUserSession(pool, decoded);
+      if (!sessionCheck.ok) {
+        return next(new Error(sessionCheck.code || 'session invalid'));
+      }
       socket.data.classId =
         decoded.class_id != null && decoded.class_id !== ''
           ? Number(decoded.class_id)
@@ -71,6 +83,9 @@ async function initSocketServer(httpServer) {
     logConnectionLine(`CONNECT user=${uid} role=${role} sid=${socket.id}`);
 
     await socket.join(`user:${uid}`);
+    if (socket.data.sessionId) {
+      await socket.join(`sess:${socket.data.sessionId}`);
+    }
 
     if (role === 'admin') {
       await socket.join('role:admin');
@@ -81,10 +96,24 @@ async function initSocketServer(httpServer) {
       for (const r of rows) {
         await socket.join(`class:${r.id}:t`);
       }
+      const [tcTeacherRows] = await pool.query(
+        'SELECT teaching_class_id FROM teaching_class_teachers WHERE teacher_id = ?',
+        [uid]
+      );
+      for (const r of tcTeacherRows) {
+        await socket.join(`tc:${r.teaching_class_id}:t`);
+      }
     } else if (role === 'student') {
       await socket.join('portal:student');
       if (socket.data.classId != null && !Number.isNaN(socket.data.classId)) {
         await socket.join(`class:${socket.data.classId}:s`);
+      }
+      const [tcStudentRows] = await pool.query(
+        'SELECT teaching_class_id FROM teaching_class_students WHERE student_id = ?',
+        [uid]
+      );
+      for (const r of tcStudentRows) {
+        await socket.join(`tc:${r.teaching_class_id}:s`);
       }
     } else if (role === 'enterprise') {
       await socket.join('portal:enterprise');

@@ -17,5 +17,11 @@ router.post(
   requireRole(['student']),
   assistantController.postMessage
 );
+router.post(
+  '/sessions/:sessionId/messages/stream',
+  authenticateToken,
+  requireRole(['student']),
+  assistantController.postMessageStream
+);
 
 module.exports = router;

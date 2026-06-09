@@ -1,5 +1,5 @@
 const pool = require('../config/database');
-const { teacherManagesClass, getStudentClassId } = require('../utils/accessControl');
+const { teacherManagesClass, getStudentClassId, getStudentTeachingClassIds } = require('../utils/accessControl');
 
 async function buildWeakPayloadForClass(classId) {
   const [rows] = await pool.query(
@@ -254,11 +254,14 @@ const getMyRecommendations = async (req, res) => {
   try {
     const sid = req.user.id;
     const cid = await getStudentClassId(sid);
-    if (cid == null) {
+    const tcIds = await getStudentTeachingClassIds(sid);
+    if (cid == null && !tcIds.length) {
       return res.json({ success: true, data: { tier: 'standard', tasks: [], weakHeavy: false } });
     }
 
-    const { basicBelow, advancedAbove } = await getClassRecThresholds(cid);
+    const { basicBelow, advancedAbove } = cid != null
+      ? await getClassRecThresholds(cid)
+      : { basicBelow: 60, advancedAbove: 85 };
 
     const [[avgRow]] = await pool.query(
       `
@@ -285,16 +288,34 @@ const getMyRecommendations = async (req, res) => {
 
     const diff = tier === 'basic' ? 'basic' : tier === 'advanced' ? 'advanced' : 'standard';
 
+    const vis = [];
+    const taskParams = [sid];
+    if (cid != null) {
+      vis.push('t.class_id = ?');
+      taskParams.push(cid);
+    }
+    if (tcIds.length) {
+      vis.push(`t.teaching_class_id IN (${tcIds.map(() => '?').join(',')})`);
+      taskParams.push(...tcIds);
+    }
+    if (!vis.length) {
+      return res.json({ success: true, data: { tier, tasks: [], weakHeavy } });
+    }
+    taskParams.push(diff);
+
     const [tasks] = await pool.query(
       `
-      SELECT t.id, t.title, t.deadline, t.max_score, t.difficulty_level
+      SELECT t.id, t.title, t.deadline, t.max_score, t.difficulty_level,
+             t.teaching_class_id, tc.class_name AS teaching_class_name, co.course_name
       FROM tasks t
+      LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+      LEFT JOIN courses co ON t.course_id = co.id
       LEFT JOIN submissions s ON s.task_id = t.id AND s.student_id = ?
-      WHERE t.class_id = ? AND s.id IS NULL AND t.difficulty_level = ?
+      WHERE (${vis.join(' OR ')}) AND s.id IS NULL AND t.difficulty_level = ?
       ORDER BY t.deadline ASC
       LIMIT 8
     `,
-      [sid, cid, diff]
+      taskParams
     );
 
     res.json({ success: true, data: { tier, tasks, weakHeavy } });

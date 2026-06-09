@@ -1,0 +1,271 @@
+/* 教师端课程 / 教学班 / 模板等工作台页面共用样式 */
+.tw-page {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 20px 4px 32px;
+  min-height: calc(100vh - 120px);
+  background: #eef2f7;
+}
+
+.tw-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 24px;
+  margin-bottom: 20px;
+}
+
+.tw-head__left {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tw-title {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+
+.tw-subtitle {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.tw-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #2563eb;
+  font-weight: 500;
+}
+
+.tw-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.tw-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.tw-metric-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 16px;
+  background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.tw-metric-card__icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+
+.tw-metric-card__icon--slate { background: #f1f5f9; color: #475569; }
+.tw-metric-card__icon--blue { background: #eff6ff; color: #2563eb; }
+.tw-metric-card__icon--indigo { background: #eef2ff; color: #4f46e5; }
+.tw-metric-card__icon--teal { background: #f0fdfa; color: #0d9488; }
+.tw-metric-card__icon--orange { background: #fff7ed; color: #ea580c; }
+.tw-metric-card__icon--violet { background: #f5f3ff; color: #7c3aed; }
+
+.tw-metric-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tw-metric-card__value {
+  font-size: 26px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.tw-metric-card__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.tw-panel {
+  background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  margin-bottom: 20px;
+}
+
+.tw-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.tw-panel__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.tw-panel__meta {
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.tw-panel__body {
+  padding: 16px 18px;
+}
+
+.tw-panel__body--flush {
+  padding: 0;
+}
+
+.tw-entity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.tw-entity-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tw-entity-card:hover {
+  border-color: #c9d8ef;
+  box-shadow: 0 4px 14px rgba(15, 76, 129, 0.08);
+}
+
+.tw-entity-card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tw-entity-card__title {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.tw-entity-card__code {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  font-family: ui-monospace, monospace;
+}
+
+.tw-entity-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.tw-entity-card__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 12px;
+  background: #f8fafc;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.tw-entity-card__stats strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.tw-entity-card__note {
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.tw-entity-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.tw-role-tag {
+  margin-right: 4px;
+  margin-bottom: 2px;
+}
+
+.tw-text-muted {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.tw-config-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tw-filter-bar {
+  padding: 16px 18px;
+}
+
+.tw-empty-panel {
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.tw-empty-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.tw-empty-desc {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.6;
+}

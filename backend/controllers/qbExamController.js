@@ -2,9 +2,14 @@ const pool = require("../config/database");
 const cache = require("../utils/cacheService");
 const { clientIp } = require("../utils/rateLimiter");
 const {
-  teacherManagesClass,
-  getStudentClassId,
-} = require("../utils/accessControl");
+  resolveTeacherListAudience,
+  resolveTeacherCreateAudience,
+  teacherListWhere,
+  studentAudienceContext,
+  studentVisibilityWhere,
+  getPublishedExamForStudent,
+  emitQbExamAudience,
+} = require("../utils/qbAudience");
 const { recordUsage } = require("./qbQuestionController");
 const { scoreObjective } = require("../utils/qbObjectiveScore");
 const {
@@ -16,7 +21,6 @@ const { mergeAttemptScores } = require("../utils/qbAttemptMerge");
 const { sealExamAttemptIfNeeded } = require("../utils/qbScoreSeal");
 const { persistUnsealExamAttemptIfReady } = require("../utils/qbScoreUnseal");
 const { runStudentPython } = require("../utils/qbCodeRunner");
-const rt = require("../utils/realtimeEmit");
 
 function toInt(v) {
   const n = parseInt(String(v), 10);
@@ -52,17 +56,14 @@ function checkIpAllowlist(allowStr, ip) {
 
 async function listTeacherExams(req, res) {
   try {
-    const classId = toInt(req.query.classId);
-    if (!classId)
-      return res.status(400).json({ success: false, message: "缺少 classId" });
-    if (!(await teacherManagesClass(req.user.id, classId))) {
-      return res
-        .status(403)
-        .json({ success: false, message: "无权管理该班级" });
+    const aud = await resolveTeacherListAudience(req);
+    if (!aud.ok) {
+      return res.status(aud.status).json({ success: false, message: aud.message });
     }
+    const where = teacherListWhere("qb_exams", aud);
     const [rows] = await pool.query(
-      `SELECT * FROM qb_exams WHERE class_id = ? AND teacher_id = ? ORDER BY id DESC`,
-      [classId, req.user.id],
+      `SELECT * FROM qb_exams WHERE ${where.clause} AND teacher_id = ? ORDER BY id DESC`,
+      [...where.params, req.user.id],
     );
     res.json({ success: true, data: rows });
   } catch (e) {
@@ -73,11 +74,9 @@ async function listTeacherExams(req, res) {
 async function createExam(req, res) {
   try {
     const b = req.body || {};
-    const classId = toInt(b.classId);
-    if (!(await teacherManagesClass(req.user.id, classId))) {
-      return res
-        .status(403)
-        .json({ success: false, message: "无权管理该班级" });
+    const aud = await resolveTeacherCreateAudience(req);
+    if (!aud.ok) {
+      return res.status(aud.status).json({ success: false, message: aud.message });
     }
     const title = String(b.title || "").trim();
     if (!title)
@@ -85,12 +84,13 @@ async function createExam(req, res) {
         .status(400)
         .json({ success: false, message: "请填写考试名称" });
     const [r] = await pool.query(
-      `INSERT INTO qb_exams (teacher_id, class_id, title, instructions, start_at, end_at, duration_minutes, early_submit_minutes,
+      `INSERT INTO qb_exams (teacher_id, class_id, teaching_class_id, title, instructions, start_at, end_at, duration_minutes, early_submit_minutes,
         shuffle_questions, shuffle_options, randomize, random_pick_rules, anti_tab_switch, tab_switch_limit, ip_allowlist, publish_scores_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
-        classId,
+        aud.classId,
+        aud.teachingClassId,
         title,
         b.instructions || null,
         b.start_at,
@@ -110,7 +110,11 @@ async function createExam(req, res) {
     );
     await cache.invalidateQbExam(r.insertId);
     try {
-      rt.emitExam(classId, r.insertId, "create");
+      await emitQbExamAudience(
+        { class_id: aud.classId, teaching_class_id: aud.teachingClassId },
+        r.insertId,
+        "create",
+      );
     } catch (_) {}
     res.status(201).json({ success: true, id: r.insertId });
   } catch (e) {
@@ -180,7 +184,7 @@ async function updateExam(req, res) {
     );
     await cache.invalidateQbExam(id);
     try {
-      rt.emitExam(ex[0].class_id, id, "update");
+      await emitQbExamAudience(ex[0], id, "update");
     } catch (_) {}
     res.json({ success: true });
   } catch (e) {
@@ -192,7 +196,7 @@ async function deleteExam(req, res) {
   try {
     const id = toInt(req.params.id);
     const [ex2] = await pool.query(
-      `SELECT class_id FROM qb_exams WHERE id = ? AND teacher_id = ?`,
+      `SELECT * FROM qb_exams WHERE id = ? AND teacher_id = ?`,
       [id, req.user.id],
     );
     await pool.query(
@@ -205,7 +209,7 @@ async function deleteExam(req, res) {
     ]);
     await cache.invalidateQbExam(id);
     try {
-      if (ex2.length) rt.emitExam(ex2[0].class_id, id, "delete");
+      if (ex2.length) await emitQbExamAudience(ex2[0], id, "delete");
     } catch (_) {}
     res.json({ success: true });
   } catch (e) {
@@ -271,11 +275,11 @@ async function setExamQuestions(req, res) {
     await cache.invalidateQbExam(id);
     try {
       const [exm] = await pool.query(
-        `SELECT class_id FROM qb_exams WHERE id = ? LIMIT 1`,
+        `SELECT class_id, teaching_class_id FROM qb_exams WHERE id = ? LIMIT 1`,
         [id],
       );
       if (exm.length)
-        rt.emitExam(exm[0].class_id, id, "questions_saved", { count: order });
+        await emitQbExamAudience(exm[0], id, "questions_saved", { count: order });
     } catch (_) {}
     res.json({ success: true, count: order });
   } catch (e) {
@@ -304,20 +308,21 @@ function phaseForExam(exam, now = new Date()) {
 
 async function listStudentExams(req, res) {
   try {
-    const cid = await getStudentClassId(req.user.id);
-    if (cid == null) return res.json({ success: true, data: [] });
+    const ctx = await studentAudienceContext(req.user.id);
+    const vis = studentVisibilityWhere("e", ctx);
+    if (vis.clause === "0") return res.json({ success: true, data: [] });
     const qRaw =
       req.query?.q != null ? String(req.query.q).trim().slice(0, 80) : "";
     const titleLike = qRaw ? `%${qRaw}%` : null;
     const baseParams = titleLike
-      ? [req.user.id, cid, titleLike]
-      : [req.user.id, cid];
+      ? [req.user.id, ...vis.params, titleLike]
+      : [req.user.id, ...vis.params];
     const titleClause = titleLike ? " AND e.title LIKE ?" : "";
     const [rows] = await pool.query(
       `SELECT e.*, a.id AS attempt_id, a.status AS my_status, a.submitted_at, a.started_at, a.total_score, a.score_bundle_cipher
        FROM qb_exams e
        LEFT JOIN qb_exam_attempts a ON a.exam_id = e.id AND a.student_id = ?
-       WHERE e.class_id = ? AND e.status = 'published'${titleClause}
+       WHERE ${vis.clause} AND e.status = 'published'${titleClause}
        ORDER BY e.start_at DESC`,
       baseParams,
     );
@@ -332,7 +337,7 @@ async function listStudentExams(req, res) {
       `SELECT e.*, a.id AS attempt_id, a.status AS my_status, a.submitted_at, a.started_at, a.total_score, a.score_bundle_cipher
        FROM qb_exams e
        LEFT JOIN qb_exam_attempts a ON a.exam_id = e.id AND a.student_id = ?
-       WHERE e.class_id = ? AND e.status = 'published'${titleClause}
+       WHERE ${vis.clause} AND e.status = 'published'${titleClause}
        ORDER BY e.start_at DESC`,
       baseParams,
     );
@@ -354,16 +359,11 @@ async function listStudentExams(req, res) {
 async function studentExamMeta(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
     /** 学生端阶段依赖当前时间，避免缓存导致「列表显示可考但 start 返回 400」不一致 */
-    const [rows] = await pool.query(
-      `SELECT * FROM qb_exams WHERE id = ? AND class_id = ? AND status = 'published'`,
-      [id, cid],
-    );
-    if (!rows.length) {
+    const exam = await getPublishedExamForStudent(id, req.user.id);
+    if (!exam) {
       return res.status(404).json({ success: false, message: '考试不存在' });
     }
-    const exam = rows[0];
     const now = new Date();
     const ph = phaseForExam(exam, now);
     return res.json({
@@ -390,13 +390,10 @@ async function startExam(req, res) {
   try {
     const id = toInt(req.params.id);
     const ip = clientIp(req);
-    const cid = await getStudentClassId(req.user.id);
-    const [ex] = await pool.query(
-      `SELECT * FROM qb_exams WHERE id = ? AND class_id = ? AND status = 'published'`,
-      [id, cid],
-    );
-    if (!ex.length)
+    const exRow = await getPublishedExamForStudent(id, req.user.id);
+    if (!exRow)
       return res.status(404).json({ success: false, message: "考试不存在" });
+    const ex = [exRow];
     if (!checkIpAllowlist(ex[0].ip_allowlist, ip)) {
       return res
         .status(403)
@@ -517,11 +514,12 @@ async function startExam(req, res) {
 async function autosaveExam(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
+    const exam = await getPublishedExamForStudent(id, req.user.id);
+    if (!exam)
+      return res.status(404).json({ success: false, message: "未开始考试" });
     const [at] = await pool.query(
-      `SELECT a.* FROM qb_exam_attempts a JOIN qb_exams e ON e.id = a.exam_id
-       WHERE a.exam_id = ? AND a.student_id = ? AND e.class_id = ?`,
-      [id, req.user.id, cid],
+      `SELECT a.* FROM qb_exam_attempts a WHERE a.exam_id = ? AND a.student_id = ?`,
+      [id, req.user.id],
     );
     if (!at.length)
       return res.status(404).json({ success: false, message: "未开始考试" });
@@ -546,14 +544,18 @@ async function autosaveExam(req, res) {
 async function tabEventExam(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
+    const exam = await getPublishedExamForStudent(id, req.user.id);
+    if (!exam)
+      return res
+        .status(404)
+        .json({ success: false, message: "无进行中的答卷" });
     const [rows] = await pool.query(
       `SELECT a.id, a.tab_switch_count, e.anti_tab_switch, e.tab_switch_limit, u.real_name, u.username
        FROM qb_exam_attempts a
        JOIN qb_exams e ON e.id = a.exam_id
        JOIN users u ON u.id = a.student_id
-       WHERE a.exam_id = ? AND a.student_id = ? AND e.class_id = ? AND a.submitted_at IS NULL`,
-      [id, req.user.id, cid],
+       WHERE a.exam_id = ? AND a.student_id = ? AND a.submitted_at IS NULL`,
+      [id, req.user.id],
     );
     if (!rows.length)
       return res
@@ -576,7 +578,7 @@ async function tabEventExam(req, res) {
     }
     try {
       const { emitExamMonitorTab } = require("../socket/examLiveSocket");
-      emitExamMonitorTab(cid, id, {
+      emitExamMonitorTab(id, {
         studentId: req.user.id,
         displayName:
           (r.real_name && String(r.real_name).trim()) || r.username || "学生",
@@ -595,13 +597,10 @@ async function submitExam(req, res) {
   try {
     const id = toInt(req.params.id);
     const ip = clientIp(req);
-    const cid = await getStudentClassId(req.user.id);
-    const [ex] = await pool.query(
-      `SELECT * FROM qb_exams WHERE id = ? AND class_id = ? AND status = 'published'`,
-      [id, cid],
-    );
-    if (!ex.length)
+    const exRow = await getPublishedExamForStudent(id, req.user.id);
+    if (!exRow)
       return res.status(404).json({ success: false, message: "考试不存在" });
+    const ex = [exRow];
     if (!checkIpAllowlist(ex[0].ip_allowlist, ip)) {
       return res
         .status(403)
@@ -640,11 +639,11 @@ async function submitExam(req, res) {
       enqueueExamFinalize(at[0].id);
       try {
         const [xr] = await pool.query(
-          `SELECT class_id FROM qb_exams WHERE id = ? LIMIT 1`,
+          `SELECT class_id, teaching_class_id FROM qb_exams WHERE id = ? LIMIT 1`,
           [id],
         );
         if (xr.length)
-          rt.emitExam(xr[0].class_id, id, "auto_submit_tab", {
+          await emitQbExamAudience(xr[0], id, "auto_submit_tab", {
             studentId: req.user.id,
           });
       } catch (_) {}
@@ -670,7 +669,7 @@ async function submitExam(req, res) {
     );
     enqueueExamFinalize(at[0].id);
     try {
-      rt.emitExam(cid, id, "submit", {
+      await emitQbExamAudience(ex[0], id, "submit", {
         studentId: req.user.id,
         attemptId: at[0].id,
       });
@@ -728,22 +727,18 @@ async function buildStudentExamBreakdown(examId, perMap) {
 async function studentExamResult(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
-    const [ex] = await pool.query(
-      `SELECT * FROM qb_exams WHERE id = ? AND class_id = ?`,
-      [id, cid],
-    );
-    if (!ex.length)
+    const exam = await getPublishedExamForStudent(id, req.user.id);
+    if (!exam)
       return res.status(404).json({ success: false, message: "不存在" });
-    const pub = ex[0].publish_scores_at
-      ? new Date(ex[0].publish_scores_at)
+    const pub = exam.publish_scores_at
+      ? new Date(exam.publish_scores_at)
       : null;
     if (pub && new Date() < pub) {
       return res.json({
         success: true,
         data: {
           visible: false,
-          message: `成绩将于 ${ex[0].publish_scores_at} 公布`,
+          message: `成绩将于 ${exam.publish_scores_at} 公布`,
         },
       });
     }
@@ -757,7 +752,7 @@ async function studentExamResult(req, res) {
         data: { visible: false, message: "暂无成绩或未交卷" },
       });
     }
-    await persistUnsealExamAttemptIfReady(at[0].id, ex[0].publish_scores_at);
+    await persistUnsealExamAttemptIfReady(at[0].id, exam.publish_scores_at);
     const [at2] = await pool.query(
       `SELECT * FROM qb_exam_attempts WHERE exam_id = ? AND student_id = ?`,
       [id, req.user.id],
@@ -991,12 +986,8 @@ async function studentRunExamCode(req, res) {
     if (code == null || String(code).length > 100000) {
       return res.status(400).json({ success: false, message: "代码过长" });
     }
-    const cid = await getStudentClassId(req.user.id);
-    const [ex] = await pool.query(
-      `SELECT id FROM qb_exams WHERE id = ? AND class_id = ? AND status = 'published'`,
-      [id, cid],
-    );
-    if (!ex.length)
+    const exam = await getPublishedExamForStudent(id, req.user.id);
+    if (!exam)
       return res.status(404).json({ success: false, message: "考试不存在" });
     const [at] = await pool.query(
       `SELECT id, submitted_at FROM qb_exam_attempts WHERE exam_id = ? AND student_id = ?`,

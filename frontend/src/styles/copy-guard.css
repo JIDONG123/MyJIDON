@@ -1,0 +1,38 @@
+/**
+ * 全站禁止选中/复制静态文案；表单与可编辑区域除外
+ */
+html.sg-copy-guard,
+html.sg-copy-guard body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html.sg-copy-guard input,
+html.sg-copy-guard textarea,
+html.sg-copy-guard select,
+html.sg-copy-guard [contenteditable='true'],
+html.sg-copy-guard [contenteditable=''],
+html.sg-copy-guard .el-input__inner,
+html.sg-copy-guard .el-textarea__inner,
+html.sg-copy-guard .el-select__input,
+html.sg-copy-guard .el-select-v2__combobox-input,
+html.sg-copy-guard .el-cascader__search-input,
+html.sg-copy-guard .el-date-editor input,
+html.sg-copy-guard .el-autocomplete .el-input__inner,
+html.sg-copy-guard .el-mention__input,
+html.sg-copy-guard .el-input-number input,
+html.sg-copy-guard .allow-copy,
+html.sg-copy-guard .allow-select,
+html.sg-copy-guard [data-allow-copy='true'] {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
+}
+
+/* 下拉面板内搜索框等 */
+html.sg-copy-guard .el-select-dropdown__item,
+html.sg-copy-guard .el-dropdown-menu__item {
+  -webkit-user-select: none;
+  user-select: none;
+}

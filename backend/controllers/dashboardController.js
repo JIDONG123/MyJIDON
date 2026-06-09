@@ -1,8 +1,23 @@
 const pool = require('../config/database');
-const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
-const { teacherManagesClass, getStudentClassId, enterpriseHasClassAccess } = require('../utils/accessControl');
+const {
+  teacherManagesClass,
+  teacherManagesTeachingClass,
+  getStudentClassId,
+  getStudentTeachingClassIds,
+  enterpriseHasClassAccess,
+  enterpriseHasTeachingClassAccess,
+} = require('../utils/accessControl');
+const { resolvePracticeScope, buildScopeSql } = require('../utils/practiceStatsScope');
+const { formatDateTime, safeFileName } = require('../utils/exportFormatters');
+const { writeWorkbookFile } = require('../utils/excelExportHelper');
+const {
+  resolveScopeExportLabel,
+  exportAccountLabel,
+  buildPracticeScoresWorkbook,
+} = require('../utils/practiceScoresExport');
+const { recordExportLog } = require('../services/exportLogService');
 const cache = require('../utils/cacheService');
 
 const GRADED_NO_ALIAS = `status IN ('ai_graded','human_graded')`;
@@ -25,6 +40,11 @@ const getDashboardStats = async (req, res) => {
       const [gradedCount] = await pool.query(
         `SELECT COUNT(*) as count FROM grading_results WHERE ${GRADED_NO_ALIAS}`
       );
+      const [courseCount] = await pool.query('SELECT COUNT(*) AS count FROM courses');
+      const [teachingClassCount] = await pool.query('SELECT COUNT(*) AS count FROM teaching_classes');
+      const [curriculumTaskCount] = await pool.query(
+        `SELECT COUNT(*) AS count FROM tasks WHERE course_id IS NOT NULL OR teaching_class_id IS NOT NULL`
+      );
 
       const payload = {
         success: true,
@@ -32,6 +52,9 @@ const getDashboardStats = async (req, res) => {
           studentCount: userCount[0].count,
           teacherCount: teacherCount[0].count,
           classCount: classCount[0].count,
+          courseCount: courseCount[0].count,
+          teachingClassCount: teachingClassCount[0].count,
+          curriculumTaskCount: curriculumTaskCount[0].count,
           taskCount: taskCount[0].count,
           submissionCount: submissionCount[0].count,
           gradedCount: gradedCount[0].count,
@@ -100,6 +123,139 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
+function aggregateDimensionRadar(dimRows) {
+  const dimAgg = {};
+  let dimCount = 0;
+  for (const r of dimRows) {
+    let arr = r.dimension_scores;
+    if (typeof arr === 'string') {
+      try {
+        arr = JSON.parse(arr);
+      } catch {
+        arr = [];
+      }
+    }
+    if (!Array.isArray(arr)) continue;
+    dimCount += 1;
+    for (const d of arr) {
+      const name = d.name || '维度';
+      if (!dimAgg[name]) dimAgg[name] = { sum: 0, max: 0, n: 0 };
+      dimAgg[name].sum += Number(d.score) || 0;
+      dimAgg[name].max += Number(d.maxScore) || 0;
+      dimAgg[name].n += 1;
+    }
+  }
+  const dimensionRadar = Object.keys(dimAgg).map((name) => ({
+    name,
+    value: dimAgg[name].n ? Math.round((dimAgg[name].sum / dimAgg[name].max) * 100) : 0,
+  }));
+  return { dimensionRadar, dimensionSampleCount: dimCount };
+}
+
+async function computePracticeStatistics(scope) {
+  const scoreExpr = 'COALESCE(gr.final_score, gr.human_score, gr.total_score)';
+  const { studentWhereSql, studentParams, taskWhereSql, taskParams } = buildScopeSql(scope);
+
+  const [stats] = await pool.query(
+    `
+    SELECT
+      AVG(${scoreExpr}) AS avgScore,
+      MIN(${scoreExpr}) AS minScore,
+      MAX(${scoreExpr}) AS maxScore,
+      COUNT(DISTINCT s.student_id) AS studentCount,
+      COUNT(s.id) AS submissionCount,
+      COUNT(gr.id) AS gradedCount
+    FROM submissions s
+    JOIN tasks t ON s.task_id = t.id
+    LEFT JOIN grading_results gr ON s.id = gr.submission_id
+    WHERE ${studentWhereSql} AND ${taskWhereSql}
+  `,
+    [...studentParams, ...taskParams]
+  );
+
+  const [scoreDistribution] = await pool.query(
+    `
+    SELECT
+      CASE
+        WHEN ${scoreExpr} >= 90 THEN '优秀'
+        WHEN ${scoreExpr} >= 80 THEN '良好'
+        WHEN ${scoreExpr} >= 70 THEN '中等'
+        WHEN ${scoreExpr} >= 60 THEN '及格'
+        ELSE '不及格'
+      END AS grade,
+      COUNT(*) AS count
+    FROM grading_results gr
+    JOIN submissions s ON gr.submission_id = s.id
+    JOIN tasks t ON s.task_id = t.id
+    WHERE ${studentWhereSql} AND ${taskWhereSql} AND ${scoreExpr} IS NOT NULL
+    GROUP BY grade
+  `,
+    [...studentParams, ...taskParams]
+  );
+
+  const [dimRows] = await pool.query(
+    `
+    SELECT gr.dimension_scores
+    FROM grading_results gr
+    JOIN submissions s ON gr.submission_id = s.id
+    JOIN tasks t ON s.task_id = t.id
+    WHERE ${studentWhereSql} AND ${taskWhereSql} AND gr.dimension_scores IS NOT NULL
+  `,
+    [...studentParams, ...taskParams]
+  );
+
+  const { dimensionRadar, dimensionSampleCount } = aggregateDimensionRadar(dimRows);
+
+  let rosterCount = stats[0].studentCount;
+  if (scope.type === 'legacy_class') {
+    const [[r]] = await pool.query(
+      `SELECT COUNT(*) AS c FROM users WHERE class_id = ? AND role = 'student'`,
+      [scope.scopeId]
+    );
+    rosterCount = r.c;
+  } else if (scope.type === 'teaching_class') {
+    const [[r]] = await pool.query(
+      `SELECT COUNT(*) AS c FROM teaching_class_students WHERE teaching_class_id = ?`,
+      [scope.scopeId]
+    );
+    rosterCount = r.c;
+  } else if (scope.type === 'course') {
+    const [[r]] = await pool.query(
+      `
+      SELECT COUNT(DISTINCT tcs.student_id) AS c
+      FROM teaching_class_students tcs
+      JOIN teaching_classes tc ON tc.id = tcs.teaching_class_id
+      WHERE tc.course_id = ?
+    `,
+      [scope.scopeId]
+    );
+    rosterCount = r.c;
+  }
+
+  return {
+    ...stats[0],
+    studentCount: rosterCount,
+    scoreDistribution,
+    dimensionRadar,
+    dimensionSampleCount,
+    scopeType: scope.type,
+    scopeId: scope.scopeId,
+  };
+}
+
+const getPracticeStatistics = async (req, res) => {
+  try {
+    const scope = await resolvePracticeScope(req);
+    if (!scope.ok) {
+      return res.status(scope.status).json({ success: false, message: scope.message });
+    }
+    const data = await computePracticeStatistics(scope);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取实训统计失败', error: error.message });
+  }
+};
+
 const getClassStatistics = async (req, res) => {
   try {
     const { classId } = req.params;
@@ -111,168 +267,109 @@ const getClassStatistics = async (req, res) => {
       }
     }
 
-    const scoreExpr = 'COALESCE(gr.final_score, gr.human_score, gr.total_score)';
-
-    const [stats] = await pool.query(
-      `
-      SELECT 
-        AVG(${scoreExpr}) as avgScore,
-        MIN(${scoreExpr}) as minScore,
-        MAX(${scoreExpr}) as maxScore,
-        COUNT(DISTINCT s.student_id) as studentCount,
-        COUNT(s.id) as submissionCount,
-        COUNT(gr.id) as gradedCount
-      FROM classes c
-      LEFT JOIN users u ON c.id = u.class_id AND u.role = 'student'
-      LEFT JOIN submissions s ON u.id = s.student_id
-      LEFT JOIN grading_results gr ON s.id = gr.submission_id
-      WHERE c.id = ?
-    `,
-      [classId]
-    );
-
-    const [scoreDistribution] = await pool.query(
-      `
-      SELECT 
-        CASE 
-          WHEN ${scoreExpr} >= 90 THEN '优秀'
-          WHEN ${scoreExpr} >= 80 THEN '良好'
-          WHEN ${scoreExpr} >= 70 THEN '中等'
-          WHEN ${scoreExpr} >= 60 THEN '及格'
-          ELSE '不及格'
-        END as grade,
-        COUNT(*) as count
-      FROM grading_results gr
-      LEFT JOIN submissions s ON gr.submission_id = s.id
-      WHERE s.student_id IN (SELECT id FROM users WHERE class_id = ?)
-        AND ${scoreExpr} IS NOT NULL
-      GROUP BY grade
-    `,
-      [classId]
-    );
-
-    const [dimRows] = await pool.query(
-      `
-      SELECT gr.dimension_scores
-      FROM grading_results gr
-      JOIN submissions s ON gr.submission_id = s.id
-      WHERE s.student_id IN (SELECT id FROM users WHERE class_id = ?)
-        AND gr.dimension_scores IS NOT NULL
-    `,
-      [classId]
-    );
-
-    const dimAgg = {};
-    let dimCount = 0;
-    for (const r of dimRows) {
-      let arr = r.dimension_scores;
-      if (typeof arr === 'string') {
-        try {
-          arr = JSON.parse(arr);
-        } catch {
-          arr = [];
-        }
-      }
-      if (!Array.isArray(arr)) continue;
-      dimCount += 1;
-      for (const d of arr) {
-        const name = d.name || '维度';
-        if (!dimAgg[name]) dimAgg[name] = { sum: 0, max: 0, n: 0 };
-        dimAgg[name].sum += Number(d.score) || 0;
-        dimAgg[name].max += Number(d.maxScore) || 0;
-        dimAgg[name].n += 1;
-      }
-    }
-
-    const dimensionRadar = Object.keys(dimAgg).map((name) => ({
-      name,
-      value: dimAgg[name].n ? Math.round((dimAgg[name].sum / dimAgg[name].max) * 100) : 0,
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        ...stats[0],
-        scoreDistribution: scoreDistribution,
-        dimensionRadar,
-        dimensionSampleCount: dimCount,
-      },
+    const data = await computePracticeStatistics({
+      ok: true,
+      type: 'legacy_class',
+      scopeId: Number(classId),
+      termId: null,
+      taskId: null,
+      teacherId: req.user.role === 'teacher' ? req.user.id : null,
     });
+
+    res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取班级统计失败', error: error.message });
   }
 };
 
-const exportClassScores = async (req, res) => {
+const exportPracticeScores = async (req, res) => {
   try {
-    const { classId } = req.params;
-
-    if (req.user.role === 'teacher') {
-      const ok = await teacherManagesClass(req.user.id, classId);
-      if (!ok) {
-        return res.status(403).json({ success: false, message: '无权导出该班级成绩' });
-      }
+    const scope = await resolvePracticeScope(req);
+    if (!scope.ok) {
+      return res.status(scope.status).json({ success: false, message: scope.message });
     }
+
+    const { studentWhereSql, studentParams, taskWhereSql, taskParams } = buildScopeSql(scope);
+    const scoreExpr = 'COALESCE(gr.final_score, gr.human_score, gr.total_score)';
 
     const [scores] = await pool.query(
       `
-      SELECT 
-        u.real_name as studentName,
-        t.title as taskName,
-        gr.total_score as aiScore,
-        gr.human_score as humanScore,
-        gr.final_score as finalScore,
+      SELECT
+        u.real_name AS studentName,
+        u.student_no AS studentNo,
+        lc.class_name AS adminClassName,
+        t.title AS taskName,
+        co.course_name AS courseName,
+        tc.class_name AS teachingClassName,
+        tm.name AS termName,
+        tpl.project_name AS projectName,
+        gr.total_score AS aiScore,
+        gr.human_score AS humanScore,
+        gr.enterprise_score AS enterpriseScore,
+        ${scoreExpr} AS finalScore,
         gr.status,
-        s.submitted_at
-      FROM users u
-      LEFT JOIN submissions s ON u.id = s.student_id
-      LEFT JOIN tasks t ON s.task_id = t.id
+        s.submitted_at AS submittedAt
+      FROM submissions s
+      JOIN users u ON u.id = s.student_id
+      JOIN tasks t ON s.task_id = t.id
+      LEFT JOIN classes lc ON u.class_id = lc.id
+      LEFT JOIN courses co ON t.course_id = co.id
+      LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+      LEFT JOIN terms tm ON tc.term_id = tm.id
+      LEFT JOIN training_project_templates tpl ON t.project_template_id = tpl.id
       LEFT JOIN grading_results gr ON s.id = gr.submission_id
-      WHERE u.class_id = ?
-      ORDER BY t.title, u.real_name
+      WHERE ${studentWhereSql} AND ${taskWhereSql}
+      ORDER BY co.course_name, tc.class_name, t.title, u.real_name
     `,
-      [classId]
+      [...studentParams, ...taskParams]
     );
 
-    const worksheet = xlsx.utils.json_to_sheet(scores);
-    const workbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(workbook, worksheet, '成绩明细');
+    const exportTime = formatDateTime(new Date());
+    const scopeLabel = await resolveScopeExportLabel(scope);
+    const exportAccount = exportAccountLabel(req.user);
+    const meta = { scopeLabel, exportTime, exportAccount };
 
-    const nums = scores
-      .map((r) => {
-        const v = r.finalScore ?? r.humanScore ?? r.aiScore;
-        const n = v != null && v !== '' ? Number(v) : NaN;
-        return Number.isFinite(n) ? n : null;
-      })
-      .filter((n) => n != null);
-    const summaryRows = [
-      { 统计项: '记录行数', 值: scores.length },
-      { 统计项: '含有效分数行数', 值: nums.length },
-      {
-        统计项: '平均分(按综合/教师/AI可用列)',
-        值: nums.length ? (nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2) : '-',
-      },
-      { 统计项: '最高分', 值: nums.length ? Math.max(...nums).toFixed(2) : '-' },
-      { 统计项: '最低分', 值: nums.length ? Math.min(...nums).toFixed(2) : '-' },
-    ];
-    const summarySheet = xlsx.utils.json_to_sheet(summaryRows);
-    xlsx.utils.book_append_sheet(workbook, summarySheet, '统计摘要');
+    const { workbook } = buildPracticeScoresWorkbook(scores, meta);
+    const fileName = `实训成绩_${scope.type}_${scope.scopeId}_${Date.now()}.xlsx`;
 
     const exportDir = path.join(__dirname, '..', 'exports');
-    if (!fs.existsSync(exportDir)) {
-      fs.mkdirSync(exportDir, { recursive: true });
-    }
-
-    const fileName = `班级成绩表_${Date.now()}.xlsx`;
+    if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
     const filePath = path.join(exportDir, fileName);
-    xlsx.writeFile(workbook, filePath);
+    await writeWorkbookFile(workbook, filePath);
 
-    res.download(filePath, fileName, (err) => {
-      if (err) {
-        res.status(500).json({ success: false, message: '导出失败', error: err.message });
-      }
-      fs.unlinkSync(filePath);
+    recordExportLog({
+      userId: req.user.id,
+      exportType: 'practice_scores_excel',
+      format: 'xlsx',
+      scopeLabel,
+      taskId: scope.taskId || null,
+      scopeType: scope.type,
+      scopeId: scope.scopeId,
+      fileName,
+      rowCount: scores.length,
     });
+
+    res.download(filePath, safeFileName(fileName), (err) => {
+      if (err) {
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, message: '导出失败', error: err.message });
+        }
+      }
+      try {
+        fs.unlinkSync(filePath);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '导出失败', error: error.message });
+  }
+};
+
+const exportClassScores = async (req, res) => {
+  try {
+    req.query = { ...req.query, scopeType: 'legacy_class', scopeId: req.params.classId, classId: req.params.classId };
+    return exportPracticeScores(req, res);
   } catch (error) {
     res.status(500).json({ success: false, message: '导出失败', error: error.message });
   }
@@ -280,7 +377,28 @@ const exportClassScores = async (req, res) => {
 
 const getAllClassStatistics = async (req, res) => {
   try {
-    let query = `
+    const params = [];
+    let query;
+    if (req.user.role === 'teacher') {
+      query = `
+      SELECT 
+        c.id,
+        c.class_name,
+        COUNT(DISTINCT u.id) as studentCount,
+        COUNT(DISTINCT s.id) as submissionCount,
+        COUNT(DISTINCT gr.id) as gradedCount,
+        AVG(gr.total_score) as avgScore
+      FROM classes c
+      LEFT JOIN users u ON c.id = u.class_id AND u.role = 'student'
+      LEFT JOIN submissions s ON u.id = s.student_id
+        AND s.task_id IN (SELECT id FROM tasks WHERE created_by = ? AND class_id = c.id)
+      LEFT JOIN grading_results gr ON s.id = gr.submission_id
+      WHERE c.teacher_id = ?
+      GROUP BY c.id, c.class_name ORDER BY c.class_name
+    `;
+      params.push(req.user.id, req.user.id);
+    } else {
+      query = `
       SELECT 
         c.id,
         c.class_name,
@@ -292,13 +410,9 @@ const getAllClassStatistics = async (req, res) => {
       LEFT JOIN users u ON c.id = u.class_id AND u.role = 'student'
       LEFT JOIN submissions s ON u.id = s.student_id
       LEFT JOIN grading_results gr ON s.id = gr.submission_id
+      GROUP BY c.id, c.class_name ORDER BY c.class_name
     `;
-    const params = [];
-    if (req.user.role === 'teacher') {
-      query += ' WHERE c.teacher_id = ?';
-      params.push(req.user.id);
     }
-    query += ' GROUP BY c.id, c.class_name ORDER BY c.class_name';
 
     const [stats] = await pool.query(query, params);
 
@@ -310,54 +424,103 @@ const getAllClassStatistics = async (req, res) => {
 
 const getBigScreenStats = async (req, res) => {
   try {
-    const qClass = req.query.classId != null && req.query.classId !== '' ? Number(req.query.classId) : null;
+    const qClass =
+      req.query.classId != null && req.query.classId !== '' ? Number(req.query.classId) : null;
+    const qTeachingClass =
+      req.query.teachingClassId != null && req.query.teachingClassId !== ''
+        ? Number(req.query.teachingClassId)
+        : null;
     const role = req.user.role;
     const uid = req.user.id;
     let classId = qClass;
+    let teachingClassId = qTeachingClass;
 
     if (role === 'student') {
-      classId = await getStudentClassId(uid);
-      if (classId == null) {
-        return res.json({ success: true, data: { empty: true, message: '未分班' } });
+      if (teachingClassId) {
+        const tcIds = await getStudentTeachingClassIds(uid);
+        if (!tcIds.includes(teachingClassId)) {
+          return res.status(403).json({ success: false, message: '无权查看该教学班' });
+        }
+        classId = null;
+      } else if (classId == null) {
+        classId = await getStudentClassId(uid);
+        if (classId == null) {
+          const tcIds = await getStudentTeachingClassIds(uid);
+          if (!tcIds.length) {
+            return res.json({ success: true, data: { empty: true, message: '未加入班级或教学班' } });
+          }
+          teachingClassId = tcIds[0];
+        }
       }
     } else if (role === 'teacher') {
-      if (!qClass) {
-        return res.status(400).json({ success: false, message: '请传入 classId' });
+      if (teachingClassId) {
+        const ok = await teacherManagesTeachingClass(uid, teachingClassId);
+        if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
+        classId = null;
+      } else if (classId) {
+        const ok = await teacherManagesClass(uid, classId);
+        if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
+      } else {
+        return res.status(400).json({ success: false, message: '请传入 classId 或 teachingClassId' });
       }
-      const ok = await teacherManagesClass(uid, qClass);
-      if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
     } else if (role === 'enterprise') {
-      if (!qClass) {
-        return res.status(400).json({ success: false, message: '请传入 classId' });
+      if (teachingClassId) {
+        const ok = await enterpriseHasTeachingClassAccess(uid, teachingClassId);
+        if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
+        classId = null;
+      } else if (classId) {
+        const ok = await enterpriseHasClassAccess(uid, classId);
+        if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
+      } else {
+        return res.status(400).json({ success: false, message: '请传入 classId 或 teachingClassId' });
       }
-      const ok = await enterpriseHasClassAccess(uid, qClass);
-      if (!ok) return res.status(403).json({ success: false, message: '无权查看' });
     } else if (role === 'admin') {
-      classId = qClass;
+      /* keep query params */
     }
 
     const scoreExpr = 'COALESCE(gr.final_score, gr.human_score, gr.total_score)';
     let userScope = "u.role = 'student'";
     const scopeParams = [];
-    if (classId != null) {
+    let taskScopeSql = '1=1';
+    const taskScopeParams = [];
+
+    if (teachingClassId != null) {
+      userScope +=
+        ' AND u.id IN (SELECT student_id FROM teaching_class_students WHERE teaching_class_id = ?)';
+      scopeParams.push(teachingClassId);
+      taskScopeSql = 't.teaching_class_id = ?';
+      taskScopeParams.push(teachingClassId);
+    } else if (classId != null) {
       userScope += ' AND u.class_id = ?';
       scopeParams.push(classId);
+      taskScopeSql = 't.class_id = ?';
+      taskScopeParams.push(classId);
+    }
+
+    if (role === 'teacher') {
+      taskScopeSql += ' AND t.created_by = ?';
+      taskScopeParams.push(uid);
     }
 
     const [[stuC]] = await pool.query(`SELECT COUNT(*) AS c FROM users u WHERE ${userScope}`, scopeParams);
 
-    let taskSql = 'SELECT COUNT(*) AS c FROM tasks';
-    const taskParams = [];
-    if (classId != null) {
-      taskSql += ' WHERE class_id = ?';
-      taskParams.push(classId);
-    }
+    const [[taskC]] = await pool.query(
+      `SELECT COUNT(*) AS c FROM tasks t WHERE ${taskScopeSql}`,
+      taskScopeParams
+    );
 
-    const [[taskC]] = await pool.query(taskSql, taskParams);
+    const subParams = [...scopeParams, ...taskScopeParams];
+    const [[subC]] = await pool.query(
+      `
+      SELECT COUNT(*) AS c FROM submissions s
+      JOIN users u ON u.id = s.student_id
+      JOIN tasks t ON t.id = s.task_id
+      WHERE ${userScope} AND ${taskScopeSql}
+    `,
+      subParams
+    );
 
-    const subSql = `SELECT COUNT(*) AS c FROM submissions s JOIN users u ON u.id = s.student_id WHERE ${userScope}`;
-    const [[subC]] = await pool.query(subSql, scopeParams);
-
+    const gradeParams = [...scopeParams, ...taskScopeParams];
     const [[avgRow]] = await pool.query(
       `
       SELECT AVG(${scoreExpr}) AS avgScore,
@@ -365,9 +528,10 @@ const getBigScreenStats = async (req, res) => {
       FROM grading_results gr
       JOIN submissions s ON s.id = gr.submission_id
       JOIN users u ON u.id = s.student_id
-      WHERE ${userScope}
+      JOIN tasks t ON t.id = s.task_id
+      WHERE ${userScope} AND ${taskScopeSql}
     `,
-      scopeParams
+      gradeParams
     );
 
     const [buckets] = await pool.query(
@@ -384,10 +548,11 @@ const getBigScreenStats = async (req, res) => {
       FROM grading_results gr
       JOIN submissions s ON s.id = gr.submission_id
       JOIN users u ON u.id = s.student_id
-      WHERE ${userScope} AND ${scoreExpr} IS NOT NULL
+      JOIN tasks t ON t.id = s.task_id
+      WHERE ${userScope} AND ${taskScopeSql} AND ${scoreExpr} IS NOT NULL
       GROUP BY bucket
     `,
-      scopeParams
+      gradeParams
     );
 
     const [weak] = await pool.query(
@@ -396,11 +561,12 @@ const getBigScreenStats = async (req, res) => {
       FROM grading_results gr
       JOIN submissions s ON s.id = gr.submission_id
       JOIN users u ON u.id = s.student_id
-      WHERE ${userScope} AND gr.ai_problems IS NOT NULL AND gr.ai_problems != ''
+      JOIN tasks t ON t.id = s.task_id
+      WHERE ${userScope} AND ${taskScopeSql} AND gr.ai_problems IS NOT NULL AND gr.ai_problems != ''
       ORDER BY s.submitted_at DESC
       LIMIT 10
     `,
-      scopeParams
+      gradeParams
     );
 
     const overview = {
@@ -415,6 +581,8 @@ const getBigScreenStats = async (req, res) => {
       success: true,
       data: {
         classId: classId != null ? classId : null,
+        teachingClassId: teachingClassId != null ? teachingClassId : null,
+        scopeType: teachingClassId != null ? 'teaching_class' : classId != null ? 'legacy_class' : null,
         overview,
         scoreBuckets: buckets,
         weakHints: weak.map((w) => String(w.hint).slice(0, 120)),
@@ -428,7 +596,9 @@ const getBigScreenStats = async (req, res) => {
 module.exports = {
   getDashboardStats,
   getClassStatistics,
+  getPracticeStatistics,
   exportClassScores,
+  exportPracticeScores,
   getAllClassStatistics,
   getBigScreenStats,
 };

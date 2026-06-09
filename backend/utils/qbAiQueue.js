@@ -66,12 +66,13 @@ async function processPracticeAttempt(attemptId) {
     ]);
   }
   try {
-    const rt = require('./realtimeEmit');
-    const [pr] = await pool.query(`SELECT class_id, id AS practice_id FROM qb_practices WHERE id = ? LIMIT 1`, [
-      at[0].practice_id,
-    ]);
+    const { emitQbPracticeAudience } = require('./qbAudience');
+    const [pr] = await pool.query(
+      `SELECT class_id, teaching_class_id, id AS practice_id FROM qb_practices WHERE id = ? LIMIT 1`,
+      [at[0].practice_id]
+    );
     if (pr.length) {
-      rt.emitPractice(pr[0].class_id, pr[0].practice_id, 'ai_suggestion', { attemptId });
+      await emitQbPracticeAudience(pr[0], pr[0].practice_id, 'ai_suggestion', { attemptId });
     }
   } catch {
     /* ignore */
@@ -127,10 +128,13 @@ async function processExamAttempt(attemptId) {
     ]);
   }
   try {
-    const rt = require('./realtimeEmit');
-    const [er] = await pool.query(`SELECT class_id, id AS exam_id FROM qb_exams WHERE id = ? LIMIT 1`, [at[0].exam_id]);
+    const { emitQbExamAudience } = require('./qbAudience');
+    const [er] = await pool.query(
+      `SELECT class_id, teaching_class_id, id AS exam_id FROM qb_exams WHERE id = ? LIMIT 1`,
+      [at[0].exam_id]
+    );
     if (er.length) {
-      rt.emitExam(er[0].class_id, er[0].exam_id, 'ai_suggestion', { attemptId });
+      await emitQbExamAudience(er[0], er[0].exam_id, 'ai_suggestion', { attemptId });
     }
   } catch {
     /* ignore */

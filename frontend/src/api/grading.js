@@ -3,12 +3,29 @@ import request from './index'
 /** 提交批改请求：接口应快速返回，由后台队列执行 */
 const gradePost = { timeout: 120000 }
 
-export const aiGradeSubmission = (submissionId) => {
-  return request.post(`/grading/ai/${submissionId}`, {}, gradePost)
+export const aiGradeSubmission = (submissionId, options = {}) => {
+  const body = {}
+  if (options.forceRegrade) body.forceRegrade = true
+  if (options.regradeReason) body.regradeReason = options.regradeReason
+  return request.post(`/grading/ai/${submissionId}`, body, gradePost)
 }
 
-export const batchAiGrade = (taskId) => {
-  return request.post(`/grading/batch/${taskId}`, {}, gradePost)
+export const batchAiGrade = (taskId, options = {}) => {
+  const batchMode = options.batchMode ?? options.batch_mode
+  const submissionIds = options.submissionIds ?? options.submission_ids
+  const body = {}
+  if (batchMode) body.batchMode = batchMode
+  if (submissionIds?.length) body.submissionIds = submissionIds
+  return request.post(`/grading/batch/${taskId}`, body, gradePost)
+}
+
+export function getEligibleSubmissions(taskId, options = {}) {
+  const params = {}
+  if (options.filter) params.filter = options.filter
+  if (options.lateStudentIds?.length) {
+    params.lateStudentIds = JSON.stringify(options.lateStudentIds)
+  }
+  return request.get(`/grading/tasks/${taskId}/eligible-submissions`, { params })
 }
 
 export const getBatchGradingProgress = (batchId) => {
@@ -34,7 +51,8 @@ export async function getGradingResult(submissionId) {
 }
 
 /**
- * 轮询直到 AI 队列完成或失败（不修改页面结构，仅配合异步批改）
+ * 轮询直到 AI 队列完成或失败。
+ * @deprecated 批改已改为后台 job + Socket 推送，新页面请勿调用；保留供兼容/调试。
  */
 export async function waitForAiGradingComplete(submissionId, options = {}) {
   const intervalMs = options.intervalMs ?? 2500

@@ -1,5 +1,13 @@
 const pool = require('../config/database');
-const { teacherManagesClass, getStudentClassId } = require('../utils/accessControl');
+const {
+  resolveTeacherListAudience,
+  resolveTeacherCreateAudience,
+  teacherListWhere,
+  studentAudienceContext,
+  studentVisibilityWhere,
+  getPublishedPracticeForStudent,
+  emitQbPracticeAudience,
+} = require('../utils/qbAudience');
 const { scoreObjective } = require('../utils/qbObjectiveScore');
 const { recordUsage } = require('./qbQuestionController');
 const { mergeAttemptScores } = require('../utils/qbAttemptMerge');
@@ -73,14 +81,15 @@ async function scorePracticeAttempt(practiceId, attemptId) {
 
 async function listTeacherPractices(req, res) {
   try {
-    const classId = toInt(req.query.classId);
-    if (!classId) return res.status(400).json({ success: false, message: '缺少 classId' });
-    const ok = await teacherManagesClass(req.user.id, classId);
-    if (!ok) return res.status(403).json({ success: false, message: '无权管理该班级' });
+    const aud = await resolveTeacherListAudience(req);
+    if (!aud.ok) {
+      return res.status(aud.status).json({ success: false, message: aud.message });
+    }
+    const where = teacherListWhere('p', aud);
     const [rows] = await pool.query(
       `SELECT p.*, (SELECT COUNT(*) FROM qb_practice_questions pq WHERE pq.practice_id = p.id) AS question_count
-       FROM qb_practices p WHERE p.class_id = ? AND p.teacher_id = ? ORDER BY p.id DESC`,
-      [classId, req.user.id]
+       FROM qb_practices p WHERE ${where.clause} AND p.teacher_id = ? ORDER BY p.id DESC`,
+      [...where.params, req.user.id]
     );
     res.json({ success: true, data: rows });
   } catch (e) {
@@ -92,17 +101,19 @@ async function createPractice(req, res) {
   const conn = await pool.getConnection();
   try {
     const b = req.body || {};
-    const classId = toInt(b.classId);
-    const ok = await teacherManagesClass(req.user.id, classId);
-    if (!ok) return res.status(403).json({ success: false, message: '无权管理该班级' });
+    const aud = await resolveTeacherCreateAudience(req);
+    if (!aud.ok) {
+      return res.status(aud.status).json({ success: false, message: aud.message });
+    }
     const title = String(b.title || '').trim();
     if (!title) return res.status(400).json({ success: false, message: '请填写练习名称' });
     const [r] = await conn.query(
-      `INSERT INTO qb_practices (teacher_id, class_id, title, description, deadline_at, publish_scores_at, shuffle_options, status, pick_rules)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO qb_practices (teacher_id, class_id, teaching_class_id, title, description, deadline_at, publish_scores_at, shuffle_options, status, pick_rules)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id,
-        classId,
+        aud.classId,
+        aud.teachingClassId,
         title,
         b.description || null,
         b.deadline_at || null,
@@ -112,6 +123,13 @@ async function createPractice(req, res) {
         b.pick_rules ? JSON.stringify(b.pick_rules) : null,
       ]
     );
+    try {
+      await emitQbPracticeAudience(
+        { class_id: aud.classId, teaching_class_id: aud.teachingClassId },
+        r.insertId,
+        'create'
+      );
+    } catch (_) {}
     res.status(201).json({ success: true, id: r.insertId });
   } catch (e) {
     console.error(e);
@@ -212,16 +230,17 @@ async function setPracticeQuestions(req, res) {
 
 async function listStudentPractices(req, res) {
   try {
-    const cid = await getStudentClassId(req.user.id);
-    if (cid == null) return res.json({ success: true, data: [] });
+    const ctx = await studentAudienceContext(req.user.id);
+    const vis = studentVisibilityWhere('p', ctx);
+    if (vis.clause === '0') return res.json({ success: true, data: [] });
     const [rows] = await pool.query(
       `SELECT p.id, p.title, p.deadline_at, p.publish_scores_at, p.status,
               a.id AS attempt_id, a.status AS my_status, a.total_score, a.submitted_at, a.score_bundle_cipher
        FROM qb_practices p
        LEFT JOIN qb_practice_attempts a ON a.practice_id = p.id AND a.student_id = ?
-       WHERE p.class_id = ? AND p.status = 'published'
+       WHERE ${vis.clause} AND p.status = 'published'
        ORDER BY p.id DESC`,
-      [req.user.id, cid]
+      [req.user.id, ...vis.params]
     );
     for (const row of rows) {
       if (row.attempt_id) await persistUnsealPracticeAttemptIfReady(row.attempt_id, row.publish_scores_at);
@@ -231,9 +250,9 @@ async function listStudentPractices(req, res) {
               a.id AS attempt_id, a.status AS my_status, a.total_score, a.submitted_at, a.score_bundle_cipher
        FROM qb_practices p
        LEFT JOIN qb_practice_attempts a ON a.practice_id = p.id AND a.student_id = ?
-       WHERE p.class_id = ? AND p.status = 'published'
+       WHERE ${vis.clause} AND p.status = 'published'
        ORDER BY p.id DESC`,
-      [req.user.id, cid]
+      [req.user.id, ...vis.params]
     );
     const now = new Date();
     const data = rows2.map((row) => {
@@ -260,12 +279,9 @@ async function listStudentPractices(req, res) {
 async function getStudentPracticePaper(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
-    const [p] = await pool.query(`SELECT * FROM qb_practices WHERE id = ? AND class_id = ? AND status = 'published'`, [
-      id,
-      cid,
-    ]);
-    if (!p.length) return res.status(404).json({ success: false, message: '练习不存在或未发布' });
+    const practice = await getPublishedPracticeForStudent(id, req.user.id);
+    if (!practice) return res.status(404).json({ success: false, message: '练习不存在或未发布' });
+    const p = [practice];
     const dl = p[0].deadline_at ? new Date(p[0].deadline_at) : null;
     const deadlinePassed = !!(dl && !Number.isNaN(dl.getTime()) && new Date() > dl);
     const [qs] = await pool.query(
@@ -352,12 +368,9 @@ async function submitPractice(req, res) {
   const conn = await pool.getConnection();
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
-    const [p] = await conn.query(`SELECT * FROM qb_practices WHERE id = ? AND class_id = ? AND status = 'published'`, [
-      id,
-      cid,
-    ]);
-    if (!p.length) return res.status(404).json({ success: false, message: '练习不存在' });
+    const practice = await getPublishedPracticeForStudent(id, req.user.id);
+    if (!practice) return res.status(404).json({ success: false, message: '练习不存在' });
+    const p = [practice];
     if (p[0].deadline_at && new Date(p[0].deadline_at) < new Date()) {
       return res.status(400).json({ success: false, message: '已超过截止时间' });
     }
@@ -412,12 +425,9 @@ async function submitPractice(req, res) {
 async function savePracticeDraft(req, res) {
   try {
     const id = toInt(req.params.id);
-    const cid = await getStudentClassId(req.user.id);
-    const [p] = await pool.query(
-      `SELECT id, deadline_at FROM qb_practices WHERE id = ? AND class_id = ? AND status = 'published'`,
-      [id, cid]
-    );
-    if (!p.length) return res.status(404).json({ success: false, message: '练习不存在' });
+    const practice = await getPublishedPracticeForStudent(id, req.user.id);
+    if (!practice) return res.status(404).json({ success: false, message: '练习不存在' });
+    const p = [{ id: practice.id, deadline_at: practice.deadline_at }];
     if (p[0].deadline_at) {
       const dlx = new Date(p[0].deadline_at);
       if (!Number.isNaN(dlx.getTime()) && new Date() > dlx) {
@@ -542,12 +552,9 @@ async function studentRunPracticeCode(req, res) {
     if (code == null || String(code).length > 100000) {
       return res.status(400).json({ success: false, message: '代码过长' });
     }
-    const cid = await getStudentClassId(req.user.id);
-    const [p] = await pool.query(`SELECT id, deadline_at FROM qb_practices WHERE id = ? AND class_id = ? AND status = 'published'`, [
-      id,
-      cid,
-    ]);
-    if (!p.length) return res.status(404).json({ success: false, message: '练习不存在' });
+    const practice = await getPublishedPracticeForStudent(id, req.user.id);
+    if (!practice) return res.status(404).json({ success: false, message: '练习不存在' });
+    const p = [{ id: practice.id, deadline_at: practice.deadline_at }];
     if (p[0].deadline_at && new Date(p[0].deadline_at) < new Date()) {
       return res.status(400).json({ success: false, message: '已超过截止时间' });
     }

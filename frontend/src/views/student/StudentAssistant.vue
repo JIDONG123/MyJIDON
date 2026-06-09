@@ -1,19 +1,20 @@
 <template>
-  <div class="page-asst">
-    <header class="page-head">
-      <h1 class="page-title">AI 答疑助手</h1>
-      <p class="page-desc">
-        结合本班任务与教师知识库（RAG）回答实训相关问题；请勿输入隐私或违规内容。
-      </p>
+  <div class="assistant-workspace">
+    <header class="workspace-head">
+      <div>
+        <h1 class="workspace-title">AI 学习助手</h1>
+        <p class="workspace-sub">实训场景智能答疑 · 优先知识库与任务要求 · 通用学习建议兜底</p>
+      </div>
     </header>
 
-    <div class="assistant-shell">
+    <div class="workspace-shell">
+      <!-- 左侧会话 -->
       <aside class="session-pane">
         <div class="session-pane__toolbar">
           <span class="session-pane__label">对话历史</span>
           <el-button type="primary" size="small" round @click="newSession">新对话</el-button>
         </div>
-        <el-scrollbar class="session-scrollbar">
+        <el-scrollbar class="session-scroll">
           <div
             v-for="s in sessionsDisplay"
             :key="s.id"
@@ -24,32 +25,36 @@
             <div class="sess-item__title">{{ s.displayTitle }}</div>
             <div class="sess-item__meta">{{ formatDateTime(s.updated_at) }}</div>
           </div>
-          <el-empty v-if="!sessions.length" description="暂无会话" :image-size="72" />
+          <div v-if="!sessions.length" class="sess-empty">
+            <p>暂无会话</p>
+            <p class="sess-empty__hint">点击「新对话」开始提问</p>
+          </div>
         </el-scrollbar>
       </aside>
 
+      <!-- 中间聊天 -->
       <section class="chat-pane">
         <div ref="chatBodyRef" class="chat-body">
-          <div v-if="!activeSessionId" class="chat-empty chat-empty--warn">
+          <div v-if="!activeSessionId" class="chat-empty">
             <el-empty description="请选择左侧会话或新建对话" :image-size="88" />
           </div>
 
-          <template v-else-if="!messages.length && !sending">
-            <div class="chat-empty chat-empty--welcome">
-              <div class="welcome-icon" aria-hidden="true">
-                <el-icon :size="44"><ChatDotRound /></el-icon>
+          <template v-else-if="!messages.length && !sending && !streaming">
+            <div class="welcome-card">
+              <div class="welcome-card__icon">
+                <el-icon :size="40"><ChatDotRound /></el-icon>
               </div>
-              <h2 class="welcome-title">有问题随时问我</h2>
-              <p class="welcome-desc">
-                我会结合本班实训任务与教师知识库作答；描述越具体，回答越有针对性。
+              <h2 class="welcome-card__title">你好，我是你的实训 AI 学习助手</h2>
+              <p class="welcome-card__text">
+                我可以帮助你理解任务要求、排查代码问题、整理提交规范和复习相关知识点。
               </p>
-              <div class="welcome-chips">
+              <div class="welcome-card__chips">
                 <button
-                  v-for="(ex, i) in exampleQuestions"
+                  v-for="(ex, i) in quickPrompts"
                   :key="i"
                   type="button"
-                  class="chip"
-                  @click="applyExample(ex)"
+                  class="welcome-chip"
+                  @click="applyQuickPrompt(ex, true)"
                 >
                   {{ ex }}
                 </button>
@@ -57,103 +62,131 @@
             </div>
           </template>
 
-          <transition-group v-else name="msg-pop" tag="div" class="msg-list">
-            <div
+          <div v-else class="msg-list">
+            <AssistantMessage
               v-for="m in messages"
               :key="m.id"
-              class="msg-row"
-              :class="m.role === 'user' ? 'msg-row--user' : 'msg-row--assistant'"
-            >
-              <div class="msg-avatar" :class="m.role === 'user' ? 'msg-avatar--user' : 'msg-avatar--bot'">
-                <el-icon v-if="m.role === 'user'"><UserFilled /></el-icon>
-                <el-icon v-else><Cpu /></el-icon>
-              </div>
-              <div class="msg-main">
-                <div class="msg-meta">
-                  <span class="msg-name">{{ m.role === 'user' ? '我' : '实训助手' }}</span>
-                  <span v-if="m.created_at" class="msg-time">{{ formatDateTime(m.created_at) }}</span>
-                </div>
-                <div
-                  class="bubble"
-                  :class="m.role === 'user' ? 'bubble--user' : 'bubble--assistant'"
-                >
-                  <div
-                    v-if="m.role === 'assistant'"
-                    class="bubble-content bubble-content--assistant"
-                    v-html="assistantHtml(m)"
-                  />
-                  <div v-else class="bubble-content">{{ m.content }}</div>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="sending" key="__typing__" class="msg-row msg-row--assistant msg-row--typing">
-              <div class="msg-avatar msg-avatar--bot">
-                <el-icon><Cpu /></el-icon>
-              </div>
-              <div class="msg-main">
-                <div class="msg-meta">
-                  <span class="msg-name">实训助手</span>
-                  <span class="msg-time thinking-label">思考中…</span>
-                </div>
-                <div class="bubble bubble--assistant bubble--typing">
-                  <span class="dot" /><span class="dot" /><span class="dot" />
-                </div>
-              </div>
-            </div>
-          </transition-group>
+              :message="m"
+              :meta="getMeta(m.id)"
+              :display-content="streamBuffers[m.id]"
+              :is-streaming="streamingMsgId === m.id"
+              :render-final="streamingMsgId !== m.id"
+              :show-meta="streamingMsgId !== m.id"
+              @copy="copyText"
+            />
+          </div>
         </div>
 
         <div class="composer">
-          <div class="composer-inner">
-            <el-input
-              v-model="draft"
-              type="textarea"
-              :autosize="{ minRows: 2, maxRows: 10 }"
-              :disabled="!activeSessionId || sending"
-              placeholder="输入问题，Enter 发送，Shift+Enter 换行…"
-              class="composer-input"
-              @keydown="onComposerKeydown"
-            />
+          <el-input
+            v-model="draft"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 8 }"
+            :disabled="!activeSessionId || sending || streaming"
+            placeholder="可以问任务要求、代码报错、提交规范、知识点解释等问题。"
+            class="composer-input"
+            @keydown="onComposerKeydown"
+          />
+          <div class="composer-foot">
+            <span class="composer-tip">
+              Enter 发送 · Shift+Enter 换行
+              <template v-if="streaming">· 生成中</template>
+            </span>
             <div class="composer-actions">
-              <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+              <el-button
+                v-if="streaming"
+                plain
+                @click="stopGeneration"
+              >
+                停止生成
+              </el-button>
               <el-button
                 type="primary"
-                class="send-btn"
-                :loading="sending"
-                :disabled="!activeSessionId || !draft.trim() || sending"
-                @click="send"
+                :loading="sending || streaming"
+                :disabled="!activeSessionId || !draft.trim() || sending || streaming"
+                @click="send()"
               >
-                发送
+                {{ streaming ? '生成中…' : '发送' }}
               </el-button>
             </div>
           </div>
+          <p class="composer-disclaimer">
+            AI 建议仅供学习参考，最终评分以教师复核为准。请勿输入隐私或违规内容。
+          </p>
         </div>
       </section>
+
+      <!-- 右侧依据 -->
+      <aside class="context-pane">
+        <h3 class="context-pane__title">本次回答依据</h3>
+        <div v-if="lastReplyMeta" class="context-card">
+          <dl class="context-dl">
+            <div class="context-dl__row">
+              <dt>回答模式</dt>
+              <dd>
+                <el-tag size="small" effect="plain" :type="modeMeta(lastReplyMeta.mode).tagType">
+                  {{ modeMeta(lastReplyMeta.mode).label }}
+                </el-tag>
+              </dd>
+            </div>
+            <div class="context-dl__row">
+              <dt>知识库命中</dt>
+              <dd>{{ lastReplyMeta.ragHit ? '是' : '否' }}</dd>
+            </div>
+            <div class="context-dl__row">
+              <dt>命中文档</dt>
+              <dd>{{ lastReplyMeta.sources?.length || 0 }} 条</dd>
+            </div>
+          </dl>
+          <p class="context-desc">{{ modeMeta(lastReplyMeta.mode).description }}</p>
+        </div>
+        <p v-else class="context-empty">发送问题后，这里会展示本次回答的模式与知识库命中情况。</p>
+
+        <AssistantQuickPrompts class="context-quick" :disabled="!activeSessionId || sending || streaming" @select="applyQuickPrompt" />
+
+        <div class="context-reminder">
+          <strong>使用提醒</strong>
+          <ul>
+            <li>优先查阅教师知识库与任务要求</li>
+            <li>不代写完整作业，可思路与排错</li>
+            <li>评分细则以教师发布为准</li>
+          </ul>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { ChatDotRound, UserFilled, Cpu } from '@element-plus/icons-vue'
+import { ChatDotRound } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import {
   listAssistantSessions,
   createAssistantSession,
   listAssistantMessages,
   sendAssistantMessage,
+  streamAssistantMessage,
+  isAssistantStreamEnabled,
 } from '../../api/assistant'
-import { ElMessage } from 'element-plus'
 import { useUserStore } from '../../stores/user'
 import { formatDateTime } from '../../utils/format'
+import {
+  QUICK_PROMPTS,
+  modeMeta,
+  loadMessageMetaMap,
+  saveMessageMeta,
+  getMessageMeta,
+} from '../../utils/assistantDisplay'
+import AssistantMessage from '../../components/assistant/AssistantMessage.vue'
+import AssistantQuickPrompts from '../../components/assistant/AssistantQuickPrompts.vue'
 
 const userStore = useUserStore()
-
 const TITLE_STORAGE_PREFIX = 'sg_assistant_sess_titles_'
 
 function titleStorageKey() {
   const id = userStore.user?.id
-  return id != null ? `${TITLE_STORAGE_PREFIX}${id}` : TITLE_STORAGE_PREFIX + 'anon'
+  return id != null ? `${TITLE_STORAGE_PREFIX}${id}` : `${TITLE_STORAGE_PREFIX}anon`
 }
 
 function loadTitleMap() {
@@ -178,8 +211,7 @@ function saveTitleMap(map) {
 function deriveTitleFromQuestion(q) {
   const s = String(q || '').trim().replace(/\s+/g, ' ')
   if (!s) return '新对话'
-  const max = 22
-  return s.length > max ? `${s.slice(0, max)}…` : s
+  return s.length > 22 ? `${s.slice(0, 22)}…` : s
 }
 
 const sessions = ref([])
@@ -187,81 +219,121 @@ const activeSessionId = ref(null)
 const messages = ref([])
 const draft = ref('')
 const sending = ref(false)
+const streaming = ref(false)
 const chatBodyRef = ref(null)
-
-/** 侧栏展示用标题（首问生成，仅存前端 sessionStorage，不改变接口） */
 const sessionTitleMap = ref(loadTitleMap())
-
+const messageMetaMap = ref(loadMessageMetaMap(userStore.user?.id))
+const lastReplyMeta = ref(null)
 const streamBuffers = ref({})
-let streamToken = 0
+const streamingMsgId = ref(null)
+let abortController = null
+let pendingDelta = ''
+let deltaFlushTimer = null
 
-const exampleQuestions = [
-  '本次实训的提交格式有什么要求？',
-  '评分维度里「功能实现」具体指什么？',
-  '知识库里有没有和接口调试相关的说明？',
-]
+function sendErrorMessage(err) {
+  if (err?.name === 'AbortError') return '已停止生成'
+  if (err?.code === 'ECONNABORTED') {
+    return 'AI 回答生成超时（超过 2 分钟），请稍后重试或缩短问题'
+  }
+  if (err?.message?.includes('Network Error') || err?.code === 'ERR_NETWORK') {
+    return 'AI 服务暂时不可用，请稍后重试'
+  }
+  const msg = err?.response?.data?.message || err?.message || ''
+  if (msg && !/network error/i.test(msg)) return msg
+  return 'AI 服务暂时不可用，请稍后重试'
+}
 
-const sessionsDisplay = computed(() => {
-  return (sessions.value || []).map((s) => ({
+const quickPrompts = QUICK_PROMPTS
+
+const sessionsDisplay = computed(() =>
+  (sessions.value || []).map((s) => ({
     ...s,
     displayTitle: sessionTitleMap.value[s.id] || s.title || '对话',
   }))
-})
+)
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+function getMeta(messageId) {
+  return getMessageMeta(messageMetaMap.value, messageId)
 }
 
-/** 简单可读增强：换行、加粗 **x**、行内 `code` */
-function formatAssistantRich(text) {
-  let s = escapeHtml(text || '')
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  s = s.replace(/\n/g, '<br />')
-  return s
+function isNearBottom(el, threshold = 96) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold
 }
 
-function assistantHtml(m) {
-  if (m.role !== 'assistant') return escapeHtml(m.content)
-  const buf = streamBuffers.value[m.id]
-  const raw = buf !== undefined ? buf : m.content
-  return formatAssistantRich(raw)
-}
-
-function scrollBottom() {
+function scrollBottom(force = false) {
   nextTick(() => {
     const el = chatBodyRef.value
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    if (force || isNearBottom(el)) {
+      el.scrollTop = el.scrollHeight
+    }
   })
 }
 
-async function runTypewriter(msgId, fullText) {
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-    return
-  }
-  const myToken = ++streamToken
-  streamBuffers.value = { ...streamBuffers.value, [msgId]: '' }
-  const chars = Array.from(fullText)
-  const stepMs = 14
-  for (let i = 0; i <= chars.length; i++) {
-    if (myToken !== streamToken) return
-    streamBuffers.value = { ...streamBuffers.value, [msgId]: chars.slice(0, i).join('') }
-    if (i % 4 === 0) scrollBottom()
-    if (i < chars.length) await new Promise((r) => setTimeout(r, stepMs))
-  }
-  const next = { ...streamBuffers.value }
-  delete next[msgId]
-  streamBuffers.value = next
+function flushDeltaToBuffer(msgId) {
+  if (!pendingDelta || msgId == null) return
+  const cur = streamBuffers.value[msgId] || ''
+  streamBuffers.value = { ...streamBuffers.value, [msgId]: cur + pendingDelta }
+  pendingDelta = ''
   scrollBottom()
 }
 
-function cancelTypewriter() {
-  streamToken++
+function scheduleDeltaFlush(msgId) {
+  if (deltaFlushTimer) return
+  deltaFlushTimer = window.setTimeout(() => {
+    deltaFlushTimer = null
+    flushDeltaToBuffer(msgId)
+  }, 50)
+}
+
+function cancelActiveStream() {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+  if (deltaFlushTimer) {
+    window.clearTimeout(deltaFlushTimer)
+    deltaFlushTimer = null
+  }
+  pendingDelta = ''
+  streamingMsgId.value = null
   streamBuffers.value = {}
+  streaming.value = false
+}
+
+function stopGeneration() {
+  if (abortController) abortController.abort()
+}
+
+function applyReplyMeta(answerId, refsPayload) {
+  if (!refsPayload?.mode || answerId == null) return
+  const meta = {
+    mode: refsPayload.mode,
+    ragHit: refsPayload.ragHit,
+    sources: refsPayload.sources || refsPayload.references || [],
+  }
+  saveMessageMeta(userStore.user?.id, answerId, meta)
+  messageMetaMap.value = loadMessageMetaMap(userStore.user?.id)
+  lastReplyMeta.value = meta
+}
+
+async function finalizeNonStreamReply(sid, payload, isFirstUserMessage, questionText) {
+  if (isFirstUserMessage) patchSessionTitleLocal(sid, questionText)
+  lastReplyMeta.value = {
+    mode: payload.mode,
+    ragHit: payload.ragHit,
+    sources: payload.sources || [],
+  }
+  const resList = await listAssistantMessages(sid)
+  if (!resList.success) return
+  messages.value = resList.data || []
+  ensureTitleFromMessages(sid, messages.value)
+  await loadSessions()
+  const lastAsst = [...messages.value].reverse().find((m) => m.role === 'assistant')
+  if (lastAsst && payload.mode) {
+    applyReplyMeta(lastAsst.id, payload)
+  }
+  scrollBottom(true)
 }
 
 const onComposerKeydown = (e) => {
@@ -271,9 +343,18 @@ const onComposerKeydown = (e) => {
   }
 }
 
-const applyExample = (text) => {
+function applyQuickPrompt(text, sendNow = false) {
   draft.value = text
-  nextTick(() => scrollBottom())
+  if (sendNow) send(text)
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(String(text || ''))
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败')
+  }
 }
 
 const loadSessions = async () => {
@@ -289,7 +370,6 @@ const patchSessionTitleLocal = (sessionId, questionText) => {
   saveTitleMap(map)
 }
 
-/** 无本地缓存时，用首条用户消息推导标题（仍仅前端展示，不写库） */
 const ensureTitleFromMessages = (sessionId, msgs) => {
   const sid = Number(sessionId)
   if (sessionTitleMap.value[sid]) return
@@ -298,7 +378,8 @@ const ensureTitleFromMessages = (sessionId, msgs) => {
 }
 
 const newSession = async () => {
-  cancelTypewriter()
+  cancelActiveStream()
+  lastReplyMeta.value = null
   const res = await createAssistantSession({ title: '新对话' })
   if (res.success) {
     await loadSessions()
@@ -310,46 +391,167 @@ const newSession = async () => {
 const selectSession = async (id) => {
   const nid = Number(id)
   if (nid === Number(activeSessionId.value)) return
-  cancelTypewriter()
+  cancelActiveStream()
   sending.value = false
   activeSessionId.value = nid
+  lastReplyMeta.value = null
   const res = await listAssistantMessages(nid)
   if (res.success) {
     messages.value = res.data || []
     ensureTitleFromMessages(nid, messages.value)
+    const lastAsst = [...messages.value].reverse().find((m) => m.role === 'assistant')
+    if (lastAsst) {
+      const meta = getMeta(lastAsst.id)
+      if (meta) lastReplyMeta.value = meta
+    }
     scrollBottom()
   }
 }
 
-const send = async () => {
-  const t = draft.value.trim()
-  if (!t || !activeSessionId.value || sending.value) return
+const send = async (textOverride) => {
+  const t = String(textOverride ?? draft.value).trim()
+  if (!t || !activeSessionId.value || sending.value || streaming.value) return
+
+  cancelActiveStream()
   sending.value = true
   const sid = activeSessionId.value
-  const isFirstUserMessage =
-    messages.value.length === 0 || !messages.value.some((m) => m.role === 'user')
+  const isFirstUserMessage = !messages.value.some((m) => m.role === 'user')
+  const userTempId = `tmp-user-${Date.now()}`
+  const asstTempId = `tmp-asst-${Date.now()}`
+
+  messages.value = [
+    ...messages.value,
+    { id: userTempId, role: 'user', content: t, created_at: new Date().toISOString() },
+    { id: asstTempId, role: 'assistant', content: '', created_at: null },
+  ]
+  streamingMsgId.value = asstTempId
+  streamBuffers.value = { [asstTempId]: '' }
+  draft.value = ''
+  if (isFirstUserMessage) patchSessionTitleLocal(sid, t)
+  scrollBottom(true)
+
+  const useStream = isAssistantStreamEnabled()
+  let refsPayload = null
+  let streamStarted = false
+
+  const runNonStream = async () => {
+    const res = await sendAssistantMessage(sid, t)
+    if (!res.success) throw new Error(res.message || '发送失败')
+    messages.value = messages.value.filter((m) => m.id !== userTempId && m.id !== asstTempId)
+    streamBuffers.value = {}
+    streamingMsgId.value = null
+    await finalizeNonStreamReply(sid, res.data || {}, isFirstUserMessage, t)
+  }
 
   try {
-    const res = await sendAssistantMessage(sid, t)
-    if (res.success) {
-      if (isFirstUserMessage) patchSessionTitleLocal(sid, t)
-      draft.value = ''
-      const resList = await listAssistantMessages(sid)
-      if (resList.success) {
-        messages.value = resList.data || []
-        ensureTitleFromMessages(sid, messages.value)
+    if (!useStream) {
+      await runNonStream()
+      return
+    }
+
+    abortController = new AbortController()
+    streaming.value = true
+    sending.value = false
+
+    refsPayload = null
+    streamStarted = false
+
+    await streamAssistantMessage(sid, t, {
+      signal: abortController.signal,
+      onStart: (data) => {
+        streamStarted = true
+        if (data?.userMessageId) {
+          messages.value = messages.value.map((m) =>
+            m.id === userTempId ? { ...m, id: data.userMessageId } : m
+          )
+        }
+      },
+      onDelta: ({ content }) => {
+        if (!content) return
+        pendingDelta += content
+        scheduleDeltaFlush(asstTempId)
+      },
+      onReferences: (data) => {
+        refsPayload = data
+      },
+      onDone: async (data) => {
+        flushDeltaToBuffer(asstTempId)
+        const finalContent = streamBuffers.value[asstTempId] || ''
+        const answerId = data?.answerId ?? asstTempId
+        messages.value = messages.value.map((m) => {
+          if (m.id === asstTempId) {
+            return {
+              ...m,
+              id: answerId,
+              content: finalContent,
+              created_at: new Date().toISOString(),
+            }
+          }
+          return m
+        })
+        const next = { ...streamBuffers.value }
+        delete next[asstTempId]
+        streamBuffers.value = next
+        streamingMsgId.value = null
+        applyReplyMeta(answerId, refsPayload)
         await loadSessions()
-        await nextTick()
-        scrollBottom()
-        const lastAsst = [...messages.value].reverse().find((m) => m.role === 'assistant')
-        if (lastAsst?.content) await runTypewriter(lastAsst.id, lastAsst.content)
+        scrollBottom(true)
+      },
+      onError: (data) => {
+        throw new Error(data?.message || '生成失败，请稍后重试')
+      },
+    })
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      flushDeltaToBuffer(asstTempId)
+      const partial = streamBuffers.value[asstTempId] || ''
+      const stopped = partial.trim() ? `${partial.trim()}\n\n已停止生成。` : '已停止生成。'
+      messages.value = messages.value.map((m) =>
+        m.id === asstTempId ? { ...m, content: stopped } : m
+      )
+      const next = { ...streamBuffers.value }
+      delete next[asstTempId]
+      streamBuffers.value = next
+      streamingMsgId.value = null
+      return
+    }
+
+    if (useStream && !streamStarted) {
+      try {
+        messages.value = messages.value.filter((m) => m.id !== userTempId && m.id !== asstTempId)
+        streamBuffers.value = {}
+        streamingMsgId.value = null
+        await runNonStream()
+        return
+      } catch (fallbackErr) {
+        ElMessage.error(sendErrorMessage(fallbackErr))
+        return
       }
     }
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.message || '发送失败')
+
+    const errText = sendErrorMessage(e)
+    ElMessage.error(errText)
+    flushDeltaToBuffer(asstTempId)
+    const partial = streamBuffers.value[asstTempId] || ''
+    const failedText = partial.trim()
+      ? `${partial.trim()}\n\n${errText}`
+      : errText
+    messages.value = messages.value.map((m) =>
+      m.id === asstTempId ? { ...m, content: failedText } : m
+    )
+    const next = { ...streamBuffers.value }
+    delete next[asstTempId]
+    streamBuffers.value = next
+    streamingMsgId.value = null
   } finally {
     sending.value = false
-    scrollBottom()
+    streaming.value = false
+    abortController = null
+    if (deltaFlushTimer) {
+      window.clearTimeout(deltaFlushTimer)
+      deltaFlushTimer = null
+    }
+    pendingDelta = ''
   }
 }
 
@@ -361,6 +563,7 @@ watch(
 onMounted(async () => {
   userStore.loadUserFromStorage()
   sessionTitleMap.value = loadTitleMap()
+  messageMetaMap.value = loadMessageMetaMap(userStore.user?.id)
   await loadSessions()
   if (sessions.value.length) {
     await selectSession(sessions.value[0].id)
@@ -370,51 +573,62 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  cancelTypewriter()
+  cancelActiveStream()
 })
 </script>
 
 <style scoped>
-.page-asst {
-  max-width: 1280px;
-  margin: 0 auto;
+.assistant-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 16px 20px 20px;
+  box-sizing: border-box;
+  background: #eef2f7;
 }
 
-.page-head {
-  margin-bottom: 20px;
+.workspace-head {
+  flex-shrink: 0;
+  margin-bottom: 14px;
 }
 
-.page-title {
-  margin: 0 0 8px;
-  font-size: 22px;
+.workspace-title {
+  margin: 0 0 6px;
+  font-size: 24px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--sg-text);
+  color: #0f172a;
 }
 
-.page-desc {
+.workspace-sub {
   margin: 0;
   font-size: 14px;
-  line-height: 1.6;
-  color: var(--sg-text-secondary);
+  color: #64748b;
 }
 
-.assistant-shell {
-  display: flex;
-  gap: 0;
-  min-height: min(640px, calc(100vh - 220px));
-  border-radius: var(--sg-radius-lg);
-  border: 1px solid var(--sg-border);
-  background: var(--sg-bg-elevated);
-  box-shadow: var(--sg-shadow-card);
+.workspace-shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  gap: 14px;
   overflow: hidden;
 }
 
+.session-pane,
+.chat-pane,
+.context-pane {
+  background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+  min-height: 0;
+}
+
 .session-pane {
-  width: 280px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--sg-border);
-  background: linear-gradient(180deg, var(--sg-fill) 0%, #fff 40%);
   display: flex;
   flex-direction: column;
 }
@@ -423,47 +637,48 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--sg-border);
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid #eef2f7;
 }
 
 .session-pane__label {
   font-size: 14px;
-  font-weight: 600;
-  color: var(--sg-text);
+  font-weight: 700;
+  color: #334155;
 }
 
-.session-scrollbar {
+.session-scroll {
   flex: 1;
-  padding: 10px 10px 14px;
+  min-height: 0;
+  padding: 10px;
+}
+
+.session-scroll :deep(.el-scrollbar__wrap) {
+  max-height: 100%;
 }
 
 .sess-item {
-  padding: 12px 14px;
-  border-radius: var(--sg-radius-md);
+  padding: 11px 12px;
+  border-radius: 10px;
   cursor: pointer;
   margin-bottom: 6px;
-  transition:
-    background var(--sg-transition),
-    box-shadow var(--sg-transition),
-    transform var(--sg-transition-fast);
   border: 1px solid transparent;
+  transition: background 0.15s ease;
 }
 
 .sess-item:hover {
-  background: rgba(37, 99, 235, 0.06);
+  background: #f8fafc;
 }
 
 .sess-item.active {
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(37, 99, 235, 0.06) 100%);
-  border-color: rgba(37, 99, 235, 0.22);
-  box-shadow: var(--sg-shadow-xs);
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .sess-item__title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--sg-text);
+  color: #0f172a;
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -472,350 +687,292 @@ onBeforeUnmount(() => {
 }
 
 .sess-item__meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.sess-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.sess-empty__hint {
   margin-top: 6px;
   font-size: 12px;
-  color: var(--sg-text-placeholder);
 }
 
 .chat-pane {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, #fafbfc 0%, #fff 100%);
+  min-width: 0;
+  min-height: 0;
 }
 
 .chat-body {
   flex: 1;
-  min-height: 360px;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 20px 22px;
-  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+  padding: 18px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .chat-empty {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
-  min-height: 320px;
-  padding: 24px;
+  min-height: 280px;
 }
 
-.chat-empty--welcome .welcome-icon {
-  width: 72px;
-  height: 72px;
-  border-radius: 20px;
-  background: linear-gradient(145deg, var(--sg-primary-soft), #fff);
-  border: 1px solid var(--sg-border);
+.welcome-card {
+  max-width: 520px;
+  margin: 0 auto;
+  text-align: center;
+  padding: 24px 16px;
+}
+
+.welcome-card__icon {
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 14px;
+  border-radius: 14px;
+  background: #eff6ff;
+  color: #1677ff;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--sg-primary);
-  margin-bottom: 16px;
+  border: 1px solid #dbeafe;
 }
 
-.welcome-title {
-  margin: 0 0 8px;
+.welcome-card__title {
+  margin: 0 0 10px;
   font-size: 18px;
   font-weight: 700;
-  color: var(--sg-text);
+  color: #0f172a;
 }
 
-.welcome-desc {
-  margin: 0 0 20px;
-  font-size: 13px;
-  color: var(--sg-text-secondary);
-  max-width: 420px;
+.welcome-card__text {
+  margin: 0 0 18px;
+  font-size: 14px;
   line-height: 1.65;
+  color: #64748b;
 }
 
-.welcome-chips {
+.welcome-card__chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   justify-content: center;
-  max-width: 520px;
 }
 
-.chip {
-  padding: 8px 14px;
-  font-size: 13px;
-  color: var(--sg-primary);
-  background: #fff;
-  border: 1px solid rgba(37, 99, 235, 0.28);
+.welcome-chip {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 999px;
   cursor: pointer;
-  transition:
-    background var(--sg-transition),
-    border-color var(--sg-transition),
-    transform var(--sg-transition-fast);
 }
 
-.chip:hover {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: var(--sg-primary);
-  transform: translateY(-1px);
+.welcome-chip:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1677ff;
 }
 
 .msg-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 16px;
 }
 
-.msg-row {
+.typing-row {
   display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  max-width: 100%;
+  gap: 10px;
+  align-items: center;
 }
 
-.msg-row--user {
-  flex-direction: row-reverse;
-}
-
-.msg-row--user .msg-main {
-  align-items: flex-end;
-}
-
-.msg-row--user .msg-meta {
-  flex-direction: row-reverse;
-}
-
-.msg-avatar {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+.typing-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #f1f5f9;
+  color: #1677ff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  border: 1px solid #e2e8f0;
 }
 
-.msg-avatar--user {
-  background: linear-gradient(145deg, #3b82f6, #2563eb);
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
-}
-
-.msg-avatar--bot {
-  background: linear-gradient(145deg, #f1f5f9, #e2e8f0);
-  color: var(--sg-primary);
-  border: 1px solid var(--sg-border);
-}
-
-.msg-main {
+.typing-bubble {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  max-width: min(720px, calc(100% - 56px));
-}
-
-.msg-row--user .msg-main {
-  align-items: flex-end;
-}
-
-.msg-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.msg-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sg-text-secondary);
-}
-
-.msg-time {
-  font-size: 11px;
-  color: var(--sg-text-placeholder);
-}
-
-.thinking-label {
-  color: var(--sg-primary);
-  font-weight: 500;
-}
-
-.bubble {
-  border-radius: 14px;
-  padding: 12px 16px;
-  box-shadow: var(--sg-shadow-xs);
-  max-width: 100%;
-  word-break: break-word;
-}
-
-.bubble--user {
-  background: linear-gradient(145deg, #3b82f6 0%, #2563eb 100%);
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-
-.bubble--assistant {
-  background: #fff;
-  border: 1px solid var(--sg-border);
-  border-bottom-left-radius: 4px;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.06);
-}
-
-.bubble-content {
-  font-size: 14px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-}
-
-.bubble--user .bubble-content {
-  color: #fff;
-}
-
-.bubble-content--assistant :deep(code) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12.5px;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--sg-fill-muted);
-  color: #0f172a;
-}
-
-.bubble-content--assistant :deep(strong) {
-  color: var(--sg-text);
-  font-weight: 600;
-}
-
-.bubble--typing {
-  display: flex;
-  align-items: center;
   gap: 5px;
-  min-height: 44px;
-  min-width: 72px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
 }
 
-.bubble--typing .dot {
+.typing-bubble .dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--sg-primary);
+  background: #1677ff;
   opacity: 0.35;
-  animation: bounce-dot 1.2s ease-in-out infinite;
+  animation: bounce 1.2s ease-in-out infinite;
 }
 
-.bubble--typing .dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.bubble--typing .dot:nth-child(3) {
-  animation-delay: 0.3s;
-}
+.typing-bubble .dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-bubble .dot:nth-child(3) { animation-delay: 0.3s; }
 
-@keyframes bounce-dot {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.35;
-  }
-  40% {
-    transform: translateY(-5px);
-    opacity: 1;
-  }
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-4px); opacity: 1; }
 }
 
 .composer {
-  border-top: 1px solid var(--sg-border);
-  padding: 14px 18px 16px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(8px);
+  flex-shrink: 0;
+  border-top: 1px solid #eef2f7;
+  padding: 14px 16px 12px;
+  background: #fafbfc;
 }
 
-.composer-inner {
-  max-width: 880px;
-  margin: 0 auto;
-}
-
-.composer-input :deep(.el-textarea__inner) {
-  border-radius: var(--sg-radius-md);
-  font-size: 14px;
-  line-height: 1.55;
-  transition: box-shadow var(--sg-transition);
+.composer-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+  gap: 12px;
 }
 
 .composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 10px;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.composer-hint {
+.composer-tip {
   font-size: 12px;
-  color: var(--sg-text-placeholder);
+  color: #94a3b8;
 }
 
-.send-btn {
-  min-width: 92px;
-  border-radius: var(--sg-radius-md);
+.composer-disclaimer {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.context-pane {
+  padding: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.context-pane__title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.context-card {
+  padding: 12px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.context-dl {
+  margin: 0;
+}
+
+.context-dl__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.context-dl__row dt {
+  color: #64748b;
+}
+
+.context-dl__row dd {
+  margin: 0;
   font-weight: 600;
+  color: #334155;
 }
 
-.send-btn.is-disabled {
-  opacity: 0.55;
+.context-desc {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #64748b;
 }
 
-.msg-pop-enter-active,
-.msg-pop-leave-active {
-  transition:
-    opacity 0.28s var(--sg-ease-out),
-    transform 0.32s var(--sg-ease-out);
+.context-empty {
+  margin: 0 0 16px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #94a3b8;
 }
 
-.msg-pop-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
+.context-quick {
+  margin-bottom: 16px;
 }
 
-.msg-pop-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
+.context-reminder {
+  padding: 12px;
+  border-radius: 10px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  font-size: 12px;
+  color: #92400e;
 }
 
-@media (max-width: 900px) {
-  .assistant-shell {
-    flex-direction: column;
-    min-height: auto;
+.context-reminder strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.context-reminder ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.55;
+}
+
+@media (max-width: 1100px) {
+  .workspace-shell {
+    grid-template-columns: 240px 1fr;
+  }
+
+  .context-pane {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .workspace-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .session-pane {
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid var(--sg-border);
-    max-height: 220px;
+    max-height: 180px;
   }
 
-  .chat-body {
-    min-height: 280px;
-  }
-
-  .msg-main {
-    max-width: calc(100% - 52px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sess-item,
-  .chip,
-  .msg-pop-enter-active,
-  .msg-pop-leave-active {
-    transition: none !important;
-  }
-
-  .bubble--typing .dot {
-    animation: none;
-    opacity: 0.7;
+  .assistant-workspace {
+    padding: 12px 14px 14px;
   }
 }
 </style>

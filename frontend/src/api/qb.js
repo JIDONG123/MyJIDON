@@ -10,6 +10,8 @@ export const importQuestions = (file) => {
 }
 
 export const listAdminQuestions = (params) => request.get('/qb/admin/questions', { params })
+export const getAdminQuestion = (id) => request.get(`/qb/admin/questions/${id}`)
+export const getAdminQuestionUsage = (id) => request.get(`/qb/admin/questions/${id}/usage`)
 
 export const listQuestions = (params) => request.get('/qb/questions', { params })
 export const getQuestion = (id) => request.get(`/qb/questions/${id}`)

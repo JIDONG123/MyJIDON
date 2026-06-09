@@ -22,8 +22,16 @@
             :class="{ unread: !n.is_read }"
             @click="openOne(n)"
           >
-            <div class="notify-title">{{ n.title }}</div>
+            <div class="notify-title-row">
+              <el-tag size="small" :type="notificationTypeMeta(n.type).tag" effect="plain" class="notify-type-tag">
+                {{ notificationTypeMeta(n.type).label }}
+              </el-tag>
+              <span class="notify-title">{{ n.title }}</span>
+            </div>
             <div v-if="n.body" class="notify-body">{{ n.body }}</div>
+            <div v-if="notificationNavigateHint(n, role)" class="notify-link-hint">
+              {{ notificationNavigateHint(n, role) }} →
+            </div>
             <div class="notify-time">{{ formatDateTime(n.created_at) }}</div>
           </button>
         </el-scrollbar>
@@ -34,7 +42,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Bell } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -44,12 +52,15 @@ import {
   markAllNotificationsRead,
 } from '../api/notification'
 import { formatDateTime } from '../utils/format'
+import { notificationTypeMeta, notificationNavigateHint } from '../utils/notificationDisplay'
 import { subscribeRt } from '../socket/rtBus'
+import { gradingJobDetailLocation } from '../utils/gradingJobNav'
 
 const props = defineProps({
   role: { type: String, default: 'student' },
 })
 
+const route = useRoute()
 const router = useRouter()
 const unread = ref(0)
 const items = ref([])
@@ -102,11 +113,18 @@ async function openOne(n) {
     }
   } catch (_) {}
   const rid = n.ref_id
-  if (props.role === 'teacher') {
+  if (props.role === 'teacher' || props.role === 'admin') {
+    if (n.ref_type === 'grading_job' && rid) {
+      const base = props.role === 'admin' ? '/admin' : '/teacher'
+      router.push(gradingJobDetailLocation(base, rid, route))
+      return
+    }
     if (n.ref_type === 'submission' && rid) {
-      router.push(`/teacher/grading/${rid}`)
+      const base = props.role === 'admin' ? '/admin' : '/teacher'
+      router.push(`${base}/grading/${rid}`)
     } else if (n.ref_type === 'task' && rid) {
-      router.push(`/teacher/submissions/${rid}`)
+      const base = props.role === 'admin' ? '/admin' : '/teacher'
+      router.push(`${base}/submissions/${rid}`)
     }
     return
   }
@@ -124,6 +142,13 @@ onMounted(() => {
     if (payload?.domain === 'notifications') {
       refreshUnread()
       loadList()
+    }
+    if (
+      payload?.domain === 'grading_job' &&
+      payload.action === 'job_finished' &&
+      (props.role === 'teacher' || props.role === 'admin')
+    ) {
+      refreshUnread()
     }
   })
 })
@@ -197,10 +222,28 @@ onUnmounted(() => {
   background: rgba(224, 242, 254, 0.55);
 }
 
+.notify-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.notify-type-tag {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
 .notify-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--sg-text);
+  line-height: 1.35;
+}
+
+.notify-link-hint {
+  font-size: 11px;
+  color: var(--sg-primary, #0d9488);
   margin-bottom: 4px;
 }
 

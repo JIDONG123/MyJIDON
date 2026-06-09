@@ -1,11 +1,9 @@
--- v10: 企业角色、双轨评分、查重、学情/推荐、助手会话、任务核查清单与难度等（存量库执行一次）
+-- v10: 企业角色、双轨评分、查重、学情/推荐、助手会话等（幂等）
 
--- 用户角色扩展 + 禁用标记
 ALTER TABLE `users`
   MODIFY COLUMN `role` ENUM('admin', 'teacher', 'student', 'enterprise') NOT NULL COMMENT '角色',
-  ADD COLUMN `is_disabled` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '管理员禁用' AFTER `profile_bio`;
+  ADD COLUMN IF NOT EXISTS `is_disabled` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '管理员禁用' AFTER `email`;
 
--- 企业用户可访问的班级（数据隔离）
 CREATE TABLE IF NOT EXISTS `enterprise_class_access` (
   `id` INT PRIMARY KEY AUTO_INCREMENT,
   `enterprise_user_id` INT NOT NULL,
@@ -15,28 +13,24 @@ CREATE TABLE IF NOT EXISTS `enterprise_class_access` (
   INDEX `idx_class` (`class_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='企业用户-班级授权';
 
--- 任务：双轨权重、步骤核查清单、难度（推荐用）
 ALTER TABLE `tasks`
-  ADD COLUMN `campus_grade_weight` DECIMAL(5, 2) NOT NULL DEFAULT 50.00 COMMENT '校内评分权重%' AFTER `score_human_weight`,
-  ADD COLUMN `enterprise_grade_weight` DECIMAL(5, 2) NOT NULL DEFAULT 50.00 COMMENT '企业评分权重%' AFTER `campus_grade_weight`,
-  ADD COLUMN `step_checklist` JSON NULL COMMENT '步骤核查清单 [{id,title,required}]' AFTER `enterprise_standard`,
-  ADD COLUMN `difficulty_level` ENUM('basic', 'standard', 'advanced') NOT NULL DEFAULT 'standard' COMMENT '任务难度' AFTER `step_checklist`;
+  ADD COLUMN IF NOT EXISTS `campus_grade_weight` DECIMAL(5, 2) NOT NULL DEFAULT 50.00 COMMENT '校内评分权重%' AFTER `score_human_weight`,
+  ADD COLUMN IF NOT EXISTS `enterprise_grade_weight` DECIMAL(5, 2) NOT NULL DEFAULT 50.00 COMMENT '企业评分权重%' AFTER `campus_grade_weight`,
+  ADD COLUMN IF NOT EXISTS `step_checklist` JSON NULL COMMENT '步骤核查清单 [{id,title,required}]' AFTER `enterprise_standard`,
+  ADD COLUMN IF NOT EXISTS `difficulty_level` ENUM('basic', 'standard', 'advanced') NOT NULL DEFAULT 'standard' COMMENT '任务难度' AFTER `step_checklist`;
 
--- 批改：企业导师批改 + 教师手工修正核查
 ALTER TABLE `grading_results`
-  ADD COLUMN `enterprise_score` DECIMAL(5, 2) NULL COMMENT '企业导师评分' AFTER `human_comment`,
-  ADD COLUMN `enterprise_comment` TEXT NULL COMMENT '企业导师评语' AFTER `enterprise_score`,
-  ADD COLUMN `enterprise_graded_by` INT NULL AFTER `enterprise_comment`,
-  ADD COLUMN `enterprise_graded_at` TIMESTAMP NULL AFTER `enterprise_graded_by`,
-  ADD COLUMN `verification_teacher_override` JSON NULL COMMENT '教师对核查项的手工修正' AFTER `verification_result`;
+  ADD COLUMN IF NOT EXISTS `enterprise_score` DECIMAL(5, 2) NULL COMMENT '企业导师评分' AFTER `human_comment`,
+  ADD COLUMN IF NOT EXISTS `enterprise_comment` TEXT NULL COMMENT '企业导师评语' AFTER `enterprise_score`,
+  ADD COLUMN IF NOT EXISTS `enterprise_graded_by` INT NULL AFTER `enterprise_comment`,
+  ADD COLUMN IF NOT EXISTS `enterprise_graded_at` TIMESTAMP NULL AFTER `enterprise_graded_by`,
+  ADD COLUMN IF NOT EXISTS `verification_teacher_override` JSON NULL COMMENT '教师对核查项的手工修正' AFTER `verification_result`;
 
--- 提交：查重结果
 ALTER TABLE `submissions`
-  ADD COLUMN `max_similarity` DECIMAL(5, 2) NULL COMMENT '与同任务其他作业最高相似度 0-100' AFTER `revised_count`,
-  ADD COLUMN `similarity_level` ENUM('none', 'low', 'warn', 'high') NOT NULL DEFAULT 'none' AFTER `max_similarity`,
-  ADD COLUMN `similarity_pairs` JSON NULL COMMENT '疑似重复对照' AFTER `similarity_level`;
+  ADD COLUMN IF NOT EXISTS `max_similarity` DECIMAL(5, 2) NULL COMMENT '与同任务其他作业最高相似度 0-100' AFTER `revised_count`,
+  ADD COLUMN IF NOT EXISTS `similarity_level` ENUM('none', 'low', 'warn', 'high') NOT NULL DEFAULT 'none' AFTER `max_similarity`,
+  ADD COLUMN IF NOT EXISTS `similarity_pairs` JSON NULL COMMENT '疑似重复对照' AFTER `similarity_level`;
 
--- 学生 AI 助手会话
 CREATE TABLE IF NOT EXISTS `assistant_sessions` (
   `id` INT PRIMARY KEY AUTO_INCREMENT,
   `student_id` INT NOT NULL,

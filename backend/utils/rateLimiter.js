@@ -94,6 +94,13 @@ function createQbCodeRunLimiter() {
   return createWindowLimiter({ windowMs, max, keyPrefix: 'qb_code_run' });
 }
 
+/** Code Runner 创建任务（按用户+IP） */
+function createCodeRunLimiter() {
+  const windowMs = parsePositiveInt(process.env.RATE_LIMIT_CODE_RUN_WINDOW_MS, 60000);
+  const max = parsePositiveInt(process.env.RATE_LIMIT_CODE_RUN_MAX, 30);
+  return createWindowLimiter({ windowMs, max, keyPrefix: 'code_run' });
+}
+
 module.exports = {
   clientIp,
   createWindowLimiter,
@@ -105,4 +112,5 @@ module.exports = {
   createQbExamSubmitLimiter,
   createQbExamAutosaveLimiter,
   createQbCodeRunLimiter,
+  createCodeRunLimiter,
 };

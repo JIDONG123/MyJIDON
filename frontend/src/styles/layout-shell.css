@@ -1,0 +1,121 @@
+/**
+ * 全局后台壳层：侧栏 + 顶栏固定，仅主内容区滚动
+ * 各端 Layout 根节点加 class="app-shell"，侧栏/顶栏/主区使用对应 class
+ */
+
+.app-container:has(.app-shell) {
+  height: 100vh;
+  min-height: unset;
+  overflow: hidden;
+}
+
+.app-shell {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  background: var(--sg-bg-page);
+  z-index: 0;
+}
+
+.app-sidebar {
+  width: var(--sg-sidebar-width);
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  z-index: var(--sg-z-sidebar);
+}
+
+/* 品牌区固定；仅下方菜单滚动，避免 sticky + 半透明顶栏导致菜单文字叠入 Logo 区 */
+.app-sidebar .sidebar-brand {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.app-sidebar > .sidebar-menu,
+.app-sidebar > .el-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* 侧栏滚动条：细、半透明，融入深色背景 */
+.app-sidebar > .sidebar-menu::-webkit-scrollbar,
+.app-sidebar > .el-menu::-webkit-scrollbar {
+  width: 4px;
+}
+
+.app-sidebar > .sidebar-menu::-webkit-scrollbar-track,
+.app-sidebar > .el-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-sidebar > .sidebar-menu::-webkit-scrollbar-thumb,
+.app-sidebar > .el-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+}
+
+.app-sidebar > .sidebar-menu:hover::-webkit-scrollbar-thumb,
+.app-sidebar > .el-menu:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.app-sidebar > .sidebar-menu::-webkit-scrollbar-thumb:hover,
+.app-sidebar > .el-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-topbar {
+  flex-shrink: 0;
+  height: var(--sg-header-height);
+  z-index: var(--sg-z-header);
+}
+
+.app-shell-banner {
+  flex-shrink: 0;
+}
+
+.app-main-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-main-scroll.layout-main-scroll--workspace {
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-main-scroll.layout-main-scroll--workspace .route-view-root--workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

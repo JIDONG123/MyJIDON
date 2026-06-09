@@ -2,7 +2,8 @@ import { ElLoading } from 'element-plus'
 import { subscribeRt } from '../socket/rtBus'
 
 /**
- * 大模型批改耗时长，全屏 Loading + 秒表提示，避免用户以为卡死。
+ * @deprecated 异步批改已改为后台任务，请使用 applyGradingJobResponse；保留供极少数同步场景参考。
+ */
  * @param {boolean} isBatch
  * @param {() => Promise<any>} fn
  * @param {boolean | { trackLangchainSteps?: boolean; onLangchainStep?: (payload: object, loading: { setText?: (t: string) => void }) => void }} [third]

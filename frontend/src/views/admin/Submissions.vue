@@ -8,12 +8,32 @@
           <p class="page-desc">管理端查看该任务全部提交，支持批量 AI 批改</p>
         </div>
         <el-button type="success" @click="batchGrade">批量AI批改</el-button>
+        <el-button plain @click="goGradingJobs">批改任务</el-button>
       </div>
     </header>
 
     <el-skeleton v-if="loading" animated :rows="6" class="sk-main" />
 
-    <el-card v-else class="panel-card" shadow="never">
+    <el-card v-if="overview && !loading" class="panel-card overview-card" shadow="never">
+      <template #header>
+        <div class="overview-head">
+          <span class="panel-title">提交概况</span>
+          <span class="panel-sub">截止时间：{{ formatDateTime(overview.deadline) }}</span>
+        </div>
+      </template>
+      <el-row :gutter="20">
+        <el-col :xs="24" :md="12">
+          <h4 class="ov-heading">未提交（{{ overview.unsubmitted?.length ?? 0 }}）</h4>
+          <p class="ov-text">{{ unsubNames }}</p>
+        </el-col>
+        <el-col :xs="24" :md="12">
+          <h4 class="ov-heading">超时提交（{{ overview.lateSubmitters?.length ?? 0 }}）</h4>
+          <p class="ov-text">{{ lateNames }}</p>
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <el-card v-if="!loading" class="panel-card" shadow="never">
       <template #header>
         <div class="panel-header">
           <div>
@@ -95,15 +115,16 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Upload } from '@element-plus/icons-vue'
 import { getSubmissionsByTask } from '../../api/submission'
-import { aiGradeSubmission, batchAiGrade, waitForAiGradingComplete, getBatchGradingProgress } from '../../api/grading'
-import { getTaskById } from '../../api/task'
+import { aiGradeSubmission, batchAiGrade } from '../../api/grading'
+import { getTaskById, getTaskSubmissionOverview } from '../../api/task'
 import { formatDateTime } from '../../utils/format'
-import { withGradingLoading } from '../../utils/gradingLoading'
+import { applyGradingJobResponse, gradingJobErrorMessage } from '../../utils/gradingJobSubmit'
 import { useTableDensity } from '../../composables/useTableDensity'
+import { useRtOnDomains } from '../../composables/useRtOnDomains'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
@@ -113,6 +134,19 @@ const { mode, tableSize, labelMap } = useTableDensity()
 const submissions = ref([])
 const taskTitle = ref('')
 const loading = ref(true)
+const overview = ref(null)
+
+const unsubNames = computed(() => {
+  const arr = overview.value?.unsubmitted || []
+  if (!arr.length) return '—'
+  return arr.map((x) => x.real_name || x.username).join('、')
+})
+
+const lateNames = computed(() => {
+  const arr = overview.value?.lateSubmitters || []
+  if (!arr.length) return '—'
+  return arr.map((x) => `${x.real_name}（${formatDateTime(x.submitted_at)}）`).join('；')
+})
 
 const loadSubmissions = async () => {
   try {
@@ -138,9 +172,20 @@ const loadTaskInfo = async () => {
   }
 }
 
+const loadOverview = async () => {
+  try {
+    const res = await getTaskSubmissionOverview(route.params.taskId)
+    if (res.success) overview.value = res.data
+    else overview.value = null
+  } catch (_) {
+    overview.value = null
+  }
+}
+
 const getStatusType = (status) => {
+  if (status == null || status === '') return 'warning'
   const types = {
-    pending: 'info',
+    pending: 'warning',
     ai_grading: 'warning',
     ai_failed: 'danger',
     ai_graded: 'warning',
@@ -150,6 +195,7 @@ const getStatusType = (status) => {
 }
 
 const getStatusText = (status) => {
+  if (status == null || status === '') return '待批改'
   const texts = {
     pending: '待批改',
     ai_grading: 'AI批改中',
@@ -172,100 +218,55 @@ const openCompare = (submissionId) => {
   router.push(`/admin/submissions/${route.params.taskId}/similarity/${submissionId}`)
 }
 
-const pollBatchProgress = async (batchId) => {
-  const maxRounds = 200
-  for (let i = 0; i < maxRounds; i += 1) {
-    const pr = await getBatchGradingProgress(batchId)
-    if (!pr.success) {
-      break
-    }
-    await loadSubmissions()
-    const g = Number(pr.data?.grading ?? 0)
-    if (g <= 0) {
-      const done = Number(pr.data?.done ?? 0)
-      const failed = Number(pr.data?.failed ?? 0)
-      ElMessage.success(`批量批改已结束：完成 ${done}，失败 ${failed}`)
-      return
-    }
-    await new Promise((r) => setTimeout(r, 2500))
-  }
-  ElMessage.warning('批量批改进度查询结束，请刷新页面确认结果')
+const goGradingJobs = () => {
+  router.push('/admin/grading-jobs')
 }
 
 const gradeSubmission = async (submissionId) => {
   try {
-    const response = await withGradingLoading(
-      false,
-      async () => {
-        const response = await aiGradeSubmission(submissionId)
-        if (!response.success) return response
-        if (response.data?.async) {
-          ElMessage.success('已提交 AI 批改，后台处理中…')
-          await loadSubmissions()
-          const wait = await waitForAiGradingComplete(submissionId)
-          await loadSubmissions()
-          if (wait.failed) {
-            ElMessage.error(wait.data?.ai_comment || 'AI 批改失败')
-            return response
-          }
-          if (wait.ok && !wait.timeout) {
-            ElMessage.success('AI批改完成')
-          } else if (wait.timeout) {
-            ElMessage.warning('等待超时，请稍后刷新列表')
-          }
-        } else {
-          ElMessage.success('AI批改完成')
-          loadSubmissions()
-        }
-        return response
-      },
-      true
-    )
-    if (!response || !response.success) return
+    const response = await aiGradeSubmission(submissionId)
+    if (applyGradingJobResponse(response, { submissionId, taskId: route.params.taskId })) {
+      await loadSubmissions()
+      await loadOverview()
+    }
   } catch (error) {
-    const msg =
-      error?.response?.data?.message ||
-      error?.response?.data?.error ||
-      error?.message ||
-      '批改失败'
-    ElMessage.error(msg)
+    ElMessage.error(gradingJobErrorMessage(error))
     console.error(error)
   }
 }
 
 const batchGrade = async () => {
   try {
-    const response = await withGradingLoading(
-      true,
-      async () => {
-        const response = await batchAiGrade(route.params.taskId)
-        if (!response.success) return response
-        ElMessage.success(response.message || '已提交批量批改')
-        await loadSubmissions()
-        const batchId = response.data?.batchId
-        if (response.data?.async && batchId) {
-          await pollBatchProgress(batchId)
-        }
-        return response
-      },
-      true
-    )
-    if (!response || !response.success) return
+    const response = await batchAiGrade(route.params.taskId)
+    if (applyGradingJobResponse(response, { taskId: route.params.taskId })) {
+      await loadSubmissions()
+      await loadOverview()
+    }
   } catch (error) {
-    const msg =
-      error?.response?.data?.message ||
-      error?.response?.data?.error ||
-      error?.message ||
-      '批量批改失败'
-    ElMessage.error(msg)
+    ElMessage.error(gradingJobErrorMessage(error))
     console.error(error)
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loading.value = true
-  loadTaskInfo()
-  loadSubmissions()
+  await loadTaskInfo()
+  await loadSubmissions()
+  await loadOverview()
+})
+
+async function refreshListAndOverview() {
+  await loadSubmissions()
+  await loadOverview()
+}
+
+useRtOnDomains(['submissions', 'grading', 'grading_job'], (payload) => {
+  if (payload?.domain === 'grading_job') {
+    const tid = payload.taskId
+    if (tid != null && String(tid) !== String(route.params.taskId)) return
+    if (!['item_done', 'job_finished', 'job_cancelled'].includes(payload.action)) return
+  }
+  void refreshListAndOverview()
 })
 </script>
 
@@ -306,6 +307,31 @@ onMounted(() => {
 
 .sk-main {
   padding: 12px 0;
+}
+
+.overview-card {
+  margin-bottom: 16px;
+}
+
+.overview-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ov-heading {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sg-text);
+}
+
+.ov-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sg-text-secondary);
+  line-height: 1.55;
+  word-break: break-all;
 }
 
 .panel-card {

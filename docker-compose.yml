@@ -1,27 +1,31 @@
-# 智能实训批改系统 — Docker Compose（MariaDB + Redis + Node cluster）
-# 适用：Windows x86 / Linux amd64 / arm64 / 龙芯 LoongArch + 麒麟（多架构镜像）
-# 不使用 PM2、不使用 Nginx；后端 node cluster.js，前端 vite preview 静态托管 + 代理
+# 云 ECS Docker 全栈部署（amd64：MariaDB + Redis + Neo4j + Backend + Frontend + Nginx）
+# 推荐规格：4核8G（DEPLOY_PROFILE=medium）
+#
+# 用法：
+#   cp .env.example .env
+#   docker compose up -d --build
+#
+# 龙芯 VM 宿主机部署见：docs/04-deployment.md（不使用本文件）
 
 name: smart-grading
 
 networks:
-  sg-net:
+  app-network:
     driver: bridge
 
 volumes:
   mariadb_data:
   redis_data:
+  neo4j_data:
   backend_uploads:
 
 services:
   mariadb:
-    image: ${MARIADB_IMAGE:-mariadb:11.4}
+    image: ${MARIADB_IMAGE:-mariadb:10.11}
     container_name: sg-mariadb
-    restart: unless-stopped
+    restart: always
     networks:
-      - sg-net
-    ports:
-      - "${MARIADB_PORT:-3306}:3306"
+      - app-network
     environment:
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root_change_me}
       MARIADB_DATABASE: ${DB_NAME:-smart_grading_system}
@@ -31,93 +35,137 @@ services:
     volumes:
       - mariadb_data:/var/lib/mysql
       - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    expose:
+      - "3306"
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 40s
+      retries: 5
+      start_period: 30s
 
   redis:
-    image: ${REDIS_IMAGE:-redis:7-bookworm}
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: sg-redis
-    restart: unless-stopped
+    restart: always
     networks:
-      - sg-net
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+      - app-network
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+    environment:
+      TZ: Asia/Shanghai
     volumes:
       - redis_data:/data
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 10s
       timeout: 3s
-      retries: 10
+      retries: 5
+
+  neo4j:
+    image: ${NEO4J_IMAGE:-neo4j:5.26-community}
+    container_name: sg-neo4j
+    restart: always
+    networks:
+      - app-network
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-neo4j_change_me}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL:-512m}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX:-1G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512m}
+      TZ: Asia/Shanghai
+    volumes:
+      - neo4j_data:/data
+    expose:
+      - "7474"
+      - "7687"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${NEO4J_MEM_LIMIT:-2g}
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
-    image: smart-grading-backend:local
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    image: smart-grading-backend:latest
     container_name: sg-backend
-    restart: unless-stopped
+    restart: always
     networks:
-      - sg-net
+      - app-network
     depends_on:
       mariadb:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "${BACKEND_PORT:-3000}:3000"
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - .env
     environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      PORT: "3000"
-      USE_CLUSTER: ${USE_CLUSTER:-1}
-      CLUSTER_WORKERS: ${CLUSTER_WORKERS:-2}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      NODE_ENV: production
+      PORT: "8080"
+      TZ: Asia/Shanghai
+      ENABLE_BACKEND_CORS: "0"
       DB_HOST: mariadb
-      DB_USER: ${DB_USER:-sg_user}
-      DB_PASSWORD: ${DB_PASSWORD:-sg_pass_change_me}
-      DB_NAME: ${DB_NAME:-smart_grading_system}
-      REDIS_ENABLED: "1"
+      DB_PORT: "3306"
       REDIS_HOST: redis
-      REDIS_PORT: "6379"
       REDIS_URL: redis://redis:6379/0
-      SOCKET_IO_REDIS_KEY: ${SOCKET_IO_REDIS_KEY:-sg:socket.io}
-      SOCKET_IO_REDIS_DEV_PROBE: "0"
+      NEO4J_URI: bolt://neo4j:7687
     volumes:
       - backend_uploads:/app/uploads
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"require('net').createConnection(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\"",
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 60s
+    expose:
+      - "8080"
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKEND_MEM_LIMIT:-1536m}
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
-        VITE_PROXY_TARGET: http://backend:3000
-    image: smart-grading-frontend:local
+      context: .
+      dockerfile: deploy/docker/frontend.Dockerfile
+    image: smart-grading-frontend:latest
     container_name: sg-frontend
-    restart: unless-stopped
+    restart: always
     networks:
-      - sg-net
+      - app-network
     depends_on:
-      backend:
-        condition: service_healthy
-    ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - backend
     environment:
-      VITE_PROXY_TARGET: http://backend:3000
+      TZ: Asia/Shanghai
+    expose:
+      - "80"
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/docker/nginx.Dockerfile
+      args:
+        FRONTEND_IMAGE: smart-grading-frontend:latest
+    image: smart-grading-nginx:latest
+    container_name: sg-nginx
+    restart: always
+    networks:
+      - app-network
+    depends_on:
+      - frontend
+      - backend
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "${HTTP_PORT:-80}:80"

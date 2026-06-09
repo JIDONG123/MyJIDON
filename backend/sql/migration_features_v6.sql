@@ -1,9 +1,9 @@
--- 扩展功能：学号/简介/联系方式、班级公告、站内通知（存量库执行一次）
+-- 扩展功能：学号/简介/联系方式、班级公告、站内通知（幂等）
 
 ALTER TABLE `users`
-  ADD COLUMN `student_no` VARCHAR(32) NULL COMMENT '学号' AFTER `real_name`,
-  ADD COLUMN `profile_bio` VARCHAR(2000) NULL COMMENT '个人简介' AFTER `avatar`,
-  ADD COLUMN `contact_extra` VARCHAR(100) NULL COMMENT '其它联系方式（如微信号）' AFTER `phone`;
+  ADD COLUMN IF NOT EXISTS `student_no` VARCHAR(32) NULL COMMENT '学号' AFTER `real_name`,
+  ADD COLUMN IF NOT EXISTS `profile_bio` VARCHAR(2000) NULL COMMENT '个人简介' AFTER `avatar`,
+  ADD COLUMN IF NOT EXISTS `contact_extra` VARCHAR(100) NULL COMMENT '其它联系方式（如微信号）' AFTER `phone`;
 
 CREATE TABLE IF NOT EXISTS `class_announcements` (
   `id` INT PRIMARY KEY AUTO_INCREMENT,

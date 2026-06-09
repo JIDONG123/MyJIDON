@@ -59,9 +59,22 @@ uploads/
 
 # 临时目录
 tmp/
+temp/
 **/tmp/**
+**/temp/**
 !**/tmp/**/
 !**/tmp/**/.gitkeep
+!**/temp/**/
+!**/temp/**/.gitkeep
+
+# 导出、报告、生成物（运行时）
+exports/
+reports/
+generated/
+cache/
+**/exports/**
+!**/exports/**/
+!**/exports/**/.gitkeep
 
 # 全局保留空目录占位文件（不屏蔽 .gitkeep）
 !.gitkeep
@@ -101,9 +114,6 @@ coverage/
 .vite/
 **/.vite/
 
-# PM2 运行时
-.pm2/
-**/.pm2/
 pids/
 *.pid
 *.seed
@@ -174,8 +184,8 @@ id_rsa.*
 # -----------------------------------------------------------------------------
 # 8. 明确保留（注释说明，Git 不读取注释，仅供维护者参考）
 # -----------------------------------------------------------------------------
-# ✓ 保留：backend/ frontend/ docker/ docs/ 全部源代码
-# ✓ 保留：backend/sql/*.sql、docker/scripts/*.sh
-# ✓ 保留：docker-compose.yml、docker-compose.loongarch.yml、Dockerfile
+# ✓ 保留：backend/ frontend/ deploy/ docs/ 全部源代码
+# ✓ 保留：backend/sql/*.sql、deploy/docker/*、scripts/*.sh
+# ✓ 保留：docker-compose.yml、docker-compose.host.yml、.env.example、.env.host.example
 # ✓ 保留：.env.example、README.md、package.json、package-lock.json
 # ✓ 保留：.gitkeep（见上文 ! 规则）

@@ -1,12 +1,12 @@
 <template>
-  <div class="login-shell">
+  <div class="login-shell login-shell--register">
     <div class="login-hero" aria-hidden="true">
       <div class="hero-glow hero-glow--a" />
       <div class="hero-glow hero-glow--b" />
       <div class="hero-grid" />
       <div class="hero-content">
         <div class="hero-badge">
-          <span class="hero-badge-dot" />
+          <AppLogoIcon :size="22" class="hero-badge-logo" />
           学生开户
         </div>
         <h1 class="hero-title">
@@ -30,65 +30,67 @@
       </div>
     </div>
 
-    <div class="login-aside">
-      <div class="login-card login-card--wide">
-        <header class="card-head">
-          <h2 class="card-title">创建学生账户</h2>
-          <p class="card-sub">填写基本信息并选择所在班级</p>
+    <div class="login-aside login-aside--register">
+      <div class="login-card login-card--register">
+        <header class="card-head card-head--compact">
+          <div class="card-brand">
+            <AppLogoIcon :size="40" />
+            <div class="card-brand-text">
+              <h2 class="card-title card-title--compact">创建学生账户</h2>
+              <p class="card-sub">智能实训作业批改系统</p>
+            </div>
+          </div>
         </header>
 
-        <el-form :model="form" class="login-form" label-position="top" require-asterisk-position="right">
-          <el-form-item label="用户名" required>
-            <el-input v-model="form.username" placeholder="登录名，请勿使用中文" size="large" clearable :prefix-icon="User" />
-          </el-form-item>
-          <el-form-item label="密码" required>
-            <el-input
-              v-model="form.password"
-              type="password"
-              placeholder="至少 6 位，含英文字母与数字"
-              size="large"
-              show-password
-              clearable
-              :prefix-icon="Lock"
-            />
-            <p class="pwd-hint">{{ passwordHint }}</p>
-          </el-form-item>
-          <el-form-item label="确认密码" required>
-            <el-input
-              v-model="form.confirmPassword"
-              type="password"
-              placeholder="再次输入密码"
-              size="large"
-              show-password
-              clearable
-              :prefix-icon="Lock"
-            />
-          </el-form-item>
-          <el-form-item label="真实姓名" required>
-            <el-input v-model="form.realName" placeholder="与教务一致便于核对" size="large" clearable :prefix-icon="Avatar" />
-          </el-form-item>
-          <el-form-item label="邮箱">
-            <el-input v-model="form.email" type="email" placeholder="选填，用于通知与找回" size="large" clearable :prefix-icon="Message" />
-          </el-form-item>
-          <el-form-item label="选择班级（可选）">
-            <el-select v-model="form.classId" placeholder="可不选，注册后由教师加入班级" size="large" clearable filterable>
-              <el-option v-for="cls in classes" :key="cls.id" :label="cls.class_name" :value="cls.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item class="login-form__submit">
-            <el-button type="primary" size="large" class="submit-btn" :loading="submitting" @click="handleRegister">
+        <el-form :model="form" class="login-form register-form" label-position="top" require-asterisk-position="right">
+          <div class="register-form-grid">
+            <el-form-item label="用户名" required>
+              <el-input v-model="form.username" placeholder="登录名，请勿使用中文" clearable :prefix-icon="User" />
+            </el-form-item>
+            <el-form-item label="真实姓名" required>
+              <el-input v-model="form.realName" placeholder="与教务一致便于核对" clearable :prefix-icon="Avatar" />
+            </el-form-item>
+            <el-form-item label="密码" required>
+              <el-input
+                v-model="form.password"
+                type="password"
+                placeholder="至少 6 位，含字母与数字"
+                show-password
+                clearable
+                :prefix-icon="Lock"
+              />
+            </el-form-item>
+            <el-form-item label="确认密码" required>
+              <el-input
+                v-model="form.confirmPassword"
+                type="password"
+                placeholder="再次输入密码"
+                show-password
+                clearable
+                :prefix-icon="Lock"
+              />
+            </el-form-item>
+            <el-form-item label="邮箱">
+              <el-input v-model="form.email" type="email" placeholder="选填，用于通知与找回" clearable :prefix-icon="Message" />
+            </el-form-item>
+            <el-form-item label="选择班级（可选）">
+              <el-select v-model="form.classId" placeholder="可不选，注册后由教师加入" clearable filterable>
+                <el-option v-for="cls in classes" :key="cls.id" :label="cls.class_name" :value="cls.id" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item class="login-form__submit register-form__submit">
+            <el-button type="primary" class="submit-btn" :loading="submitting" @click="handleRegister">
               {{ submitting ? '提交中…' : '注册' }}
             </el-button>
           </el-form-item>
         </el-form>
 
-        <div class="card-meta">
+        <div class="card-meta card-meta--compact">
           <span class="card-meta-text">已有账户？</span>
           <router-link to="/login" class="card-meta-link">立即登录</router-link>
         </div>
       </div>
-
-      <p class="aside-foot">© 实训智能批改平台 · 学生注册信息仅用于教学管理</p>
     </div>
   </div>
 </template>
@@ -100,10 +102,9 @@ import { User, Lock, Avatar, Message, School, Notebook, CircleCheck } from '@ele
 import { useUserStore } from '../stores/user'
 import { getPublicClassNames } from '../api/class'
 import { ElMessage } from 'element-plus'
-import { PASSWORD_HINT, validatePasswordPlaintext } from '../utils/passwordPolicy'
+import { validatePasswordPlaintext } from '../utils/passwordPolicy'
+import AppLogoIcon from '../components/AppLogoIcon.vue'
 import '../styles/auth-pages.css'
-
-const passwordHint = PASSWORD_HINT
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -111,7 +112,7 @@ const classes = ref([])
 const submitting = ref(false)
 
 const featureItems = [
-  { icon: School, text: '绑定班级后即可查看教师发布的实训任务' },
+  { icon: School, text: '绑定班级后即可进入实训中心查看教师发布的任务' },
   { icon: Notebook, text: '在线提交文档 / 代码成果，自动解析送评' },
   { icon: CircleCheck, text: '跟踪批改状态与综合成绩报告' },
 ]

@@ -100,6 +100,17 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
 }
 
+/* 教师端二级菜单由 TeacherLayout 单独控制，避免全局浅底/阴影 */
+.teacher-layout .sidebar-menu--teacher.el-menu .el-sub-menu .el-menu-item {
+  margin: 2px 0;
+  width: 100% !important;
+  box-shadow: none;
+}
+
+.teacher-layout .sidebar-menu--teacher.el-menu .el-sub-menu .el-menu-item.is-active {
+  box-shadow: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar-menu.el-menu .el-menu-item {
     transition: none;

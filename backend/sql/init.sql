@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS `submissions` (
     `content` TEXT COMMENT '提交内容（文本形式）',
     `archive_extracted_text` LONGTEXT NULL COMMENT 'ZIP 解压合并后的结构化文本（供 AI 优先使用）',
     `archive_extracted_file_count` INT NULL COMMENT 'ZIP 内成功解析的文本文件数量',
+    `vl_recognition_status` VARCHAR(20) NULL COMMENT 'skipped|done|failed',
+    `vl_recognition_text` LONGTEXT NULL COMMENT 'VL 识别规整文本',
+    `vl_recognition_meta` JSON NULL COMMENT 'VL 结构化 JSON',
+    `vl_recognition_error` VARCHAR(500) NULL COMMENT 'VL 识别失败原因',
+    `vl_recognition_at` DATETIME NULL COMMENT 'VL 识别完成时间',
     `submitted_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '提交时间',
     `is_revised` TINYINT(1) DEFAULT 0 COMMENT '是否修改重交',
     `revised_count` INT DEFAULT 0 COMMENT '修改次数',
@@ -221,8 +226,9 @@ CREATE TABLE IF NOT EXISTS `system_config` (
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '系统配置表';
 
--- 初始化管理员账号（密码：admin123）
-INSERT INTO
+-- 统一 bcryptjs 密码哈希（与生产一致）：admin/admin123；教师、学生/123456
+-- 哈希由 bcryptjs 生成，勿混用原生 bcrypt 库
+INSERT IGNORE INTO
     `users` (
         `username`,
         `password`,
@@ -232,7 +238,7 @@ INSERT INTO
     )
 VALUES (
         'admin',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$Z9fxLg22Vv//etmNbIllruT6WT0NtsIZTyi7iXD.ezYbDqIOZM0GG',
         '系统管理员',
         'admin',
         'admin@example.com'
@@ -261,7 +267,7 @@ INSERT INTO
     )
 VALUES (
         'teacher1',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '张老师',
         'teacher',
         'zhang@example.com',
@@ -269,7 +275,7 @@ VALUES (
     ),
     (
         'teacher2',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '李老师',
         'teacher',
         'li@example.com',
@@ -287,7 +293,7 @@ INSERT INTO
     )
 VALUES (
         'student1',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '王小明',
         'student',
         'wang@example.com',
@@ -295,7 +301,7 @@ VALUES (
     ),
     (
         'student2',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '李小红',
         'student',
         'lihong@example.com',
@@ -303,7 +309,7 @@ VALUES (
     ),
     (
         'student3',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '张伟',
         'student',
         'zhangwei@example.com',
@@ -311,7 +317,7 @@ VALUES (
     ),
     (
         'student4',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '刘芳',
         'student',
         'liufang@example.com',
@@ -319,7 +325,7 @@ VALUES (
     ),
     (
         'student5',
-        '$2b$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq',
+        '$2a$10$yCilYCYozCmBP5ykHfbJleRUtIWd5BrQ42E0bXtK1y7oVsoysKSW2',
         '陈明',
         'student',
         'chenming@example.com',

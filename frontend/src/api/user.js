@@ -1,7 +1,14 @@
 import request from './index'
 
-export const login = (username, password) => {
-  return request.post('/users/login', { username, password })
+export const login = (username, password, captchaId, captchaCode) => {
+  return request.post('/users/login', { username, password, captchaId, captchaCode })
+}
+
+export const logout = (accessToken) => {
+  const config = accessToken
+    ? { headers: { Authorization: `Bearer ${accessToken}` } }
+    : undefined
+  return request.post('/users/logout', null, config)
 }
 
 export const register = (username, password, realName, email, classId) => {
@@ -14,6 +21,10 @@ export const getUserInfo = () => {
 
 export const updateMyProfile = (data) => {
   return request.patch('/users/me/profile', data)
+}
+
+export const updateMyCredentials = (data) => {
+  return request.patch('/users/me/credentials', data)
 }
 
 export const getMyArchive = (params) => {
@@ -45,12 +56,20 @@ export const createStudent = (data) => {
   return request.post('/users/student', data)
 }
 
+export const resetStudentInitialPassword = (id) => {
+  return request.post(`/users/students/${id}/reset-initial-password`)
+}
+
 export const getAllUsers = () => {
   return request.get('/users')
 }
 
 export const getUserById = (id) => {
   return request.get(`/users/${id}`)
+}
+
+export const getAdminUserPassword = (id) => {
+  return request.get(`/users/${id}/password`)
 }
 
 export const updateUser = (id, data) => {
@@ -63,6 +82,10 @@ export const deleteUser = (id) => {
 
 export const createTeacher = (data) => {
   return request.post('/users/teacher', data)
+}
+
+export const resetTeacherInitialPassword = (id) => {
+  return request.post(`/users/teachers/${id}/reset-initial-password`)
 }
 
 export const createEnterpriseUser = (data) => {
@@ -79,4 +102,12 @@ export const getEnterpriseUserClasses = (id) => {
 
 export const setEnterpriseUserClasses = (id, classIds) => {
   return request.put(`/users/enterprise-accounts/${id}/classes`, { classIds })
+}
+
+export const getEnterpriseUserTeachingClasses = (id) => {
+  return request.get(`/users/enterprise-accounts/${id}/teaching-classes`)
+}
+
+export const setEnterpriseUserTeachingClasses = (id, teachingClassIds) => {
+  return request.put(`/users/enterprise-accounts/${id}/teaching-classes`, { teachingClassIds })
 }

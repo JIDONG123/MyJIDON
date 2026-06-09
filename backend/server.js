@@ -2,6 +2,8 @@ require('./config/loadEnv').loadEnv();
 
 (async () => {
   try {
+    const { bootstrapDatabase } = require('./db/bootstrap');
+    await bootstrapDatabase();
     const { listenApp } = require('./createHttpServer');
     const PORT = process.env.PORT || 3000;
     await listenApp(PORT);

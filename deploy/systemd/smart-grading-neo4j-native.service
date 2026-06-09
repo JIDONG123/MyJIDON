@@ -1,0 +1,19 @@
+[Unit]
+Description=龙芯智训 - Neo4j 宿主机 (/opt/neo4j)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=vmuser
+Group=vmuser
+WorkingDirectory=/opt/neo4j
+Environment=JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ExecStart=/opt/neo4j/bin/neo4j start
+ExecStop=/opt/neo4j/bin/neo4j stop
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

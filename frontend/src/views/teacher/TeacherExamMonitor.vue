@@ -15,11 +15,11 @@
     </header>
 
     <el-alert
-      v-if="!classId || !examId"
+      v-if="!examId"
       type="warning"
       show-icon
       :closable="false"
-      title="缺少 classId 或考试 ID，请从在线考试列表点击「监考」进入。"
+      title="缺少考试 ID，请从在线考试列表点击「监考」进入。"
       class="mb16"
     />
 
@@ -74,6 +74,10 @@ const classId = computed(() => {
   const q = Number(route.query.classId)
   return Number.isFinite(q) && q > 0 ? q : null
 })
+const teachingClassId = computed(() => {
+  const q = Number(route.query.teachingClassId)
+  return Number.isFinite(q) && q > 0 ? q : null
+})
 const examId = computed(() => {
   const n = Number(route.params.examId)
   return Number.isFinite(n) && n > 0 ? n : null
@@ -118,10 +122,10 @@ function formatRemain(ms) {
 
 function attachSocket() {
   const sock = getRealtimeSocket()
-  if (!sock || !classId.value || !examId.value) return
+  if (!sock || !examId.value) return
   sock.emit(
     'join_exam_live',
-    { mode: 'monitor', classId: classId.value, examId: examId.value },
+    { mode: 'monitor', examId: examId.value },
     (ack) => {
       if (ack && ack.ok && ack.examEndMs) {
         examEndMs = Number(ack.examEndMs)
@@ -160,12 +164,14 @@ function attachSocket() {
 let detachSocket = null
 
 const goBack = () => {
-  const cid = classId.value
-  router.push(cid ? `/teacher/qbank/exams?classId=${cid}` : '/teacher/qbank/exams')
+  const q = {}
+  if (teachingClassId.value) q.teachingClassId = teachingClassId.value
+  else if (classId.value) q.classId = classId.value
+  router.push(Object.keys(q).length ? { path: '/teacher/qbank/exams', query: q } : '/teacher/qbank/exams')
 }
 
 const loadTitle = async () => {
-  if (!classId.value || !examId.value) return
+  if (!examId.value) return
   try {
     const res = await getExamTeacher(examId.value)
     if (res.success && res.data?.exam) {
@@ -194,7 +200,7 @@ onUnmounted(() => {
 })
 
 watch(
-  () => [classId.value, examId.value],
+  () => examId.value,
   async () => {
     if (typeof detachSocket === 'function') detachSocket()
     detachSocket = null

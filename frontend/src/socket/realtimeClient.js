@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
 import { dispatchRt } from './rtBus';
+import { forceAuthSessionEnd } from '../utils/authSessionHandler';
 
 let socket = null;
 
@@ -58,6 +59,12 @@ export function connectRealtime(getToken) {
   });
   s.on('rt', (payload) => {
     dispatchRt(payload);
+  });
+  s.on('auth:kicked', (payload) => {
+    forceAuthSessionEnd({
+      code: payload?.code || 'SESSION_KICKED',
+      message: payload?.message || '账号已在其他设备登录，当前会话已下线。',
+    });
   });
 
   socket = s;

@@ -1,93 +1,83 @@
 <template>
-    <div class="teacher-layout">
-        <aside class="sidebar">
-            <div class="logo">
-                <h2>校企实训评价</h2>
-                <p class="logo-sub">教师工作台</p>
-            </div>
-            <el-menu router :default-active="activeMenu" class="sidebar-menu">
+    <div class="teacher-layout app-shell">
+        <aside class="sidebar app-sidebar">
+            <SidebarBrand title="校企实训评价" subtitle="教师工作台" />
+            <el-menu
+                router
+                :default-active="activeMenu"
+                :default-openeds="defaultOpeneds"
+                class="sidebar-menu sidebar-menu--teacher"
+                background-color="transparent"
+                text-color="rgba(255, 255, 255, 0.88)"
+                active-text-color="#ffffff"
+            >
                 <el-menu-item index="/teacher/dashboard">
-                    <el-icon>
-                        <component :is="PieChart" />
-                    </el-icon>
-                    <span>数据概览</span>
+                    <el-icon><component :is="PieChart" /></el-icon>
+                    <span>教师工作台</span>
                 </el-menu-item>
-                <el-menu-item index="/teacher/classes">
-                    <el-icon>
-                        <component :is="OfficeBuilding" />
-                    </el-icon>
-                    <span>班级管理</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/class-announcements">
-                    <el-icon>
-                        <component :is="Bell" />
-                    </el-icon>
-                    <span>班级公告</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/tasks">
-                    <el-icon>
-                        <component :is="Document" />
-                    </el-icon>
-                    <span>任务管理</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/statistics">
-                    <el-icon>
-                        <component :is="TrendCharts" />
-                    </el-icon>
-                    <span>成绩统计</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/export">
-                    <el-icon>
-                        <component :is="Download" />
-                    </el-icon>
-                    <span>批量导出</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/knowledge-base">
-                    <el-icon>
-                        <component :is="Collection" />
-                    </el-icon>
-                    <span>实训知识库</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/qbank/questions">
-                    <el-icon>
-                        <component :is="Reading" />
-                    </el-icon>
-                    <span>题库管理</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/qbank/practices">
-                    <el-icon>
-                        <component :is="EditPen" />
-                    </el-icon>
-                    <span>习题练习</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/qbank/exams">
-                    <el-icon>
-                        <component :is="Timer" />
-                    </el-icon>
-                    <span>在线考试</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/big-screen">
-                    <el-icon>
-                        <component :is="Monitor" />
-                    </el-icon>
-                    <span>数据大屏</span>
-                </el-menu-item>
-                <el-menu-item index="/teacher/assistant-stats">
-                    <el-icon>
-                        <component :is="ChatDotRound" />
-                    </el-icon>
-                    <span>学生助手统计</span>
-                </el-menu-item>
+
+                <el-sub-menu index="teach">
+                    <template #title>
+                        <el-icon><component :is="Reading" /></el-icon>
+                        <span>课程教学</span>
+                    </template>
+                    <el-menu-item index="/teacher/courses">我的课程</el-menu-item>
+                    <el-menu-item index="/teacher/teaching-classes">我的教学班</el-menu-item>
+                    <el-menu-item index="/teacher/class-announcements">班级公告</el-menu-item>
+                    <el-menu-item index="/teacher/classes">行政班工作台</el-menu-item>
+                </el-sub-menu>
+
+                <el-sub-menu index="practice">
+                    <template #title>
+                        <el-icon><component :is="Document" /></el-icon>
+                        <span>实训评价</span>
+                    </template>
+                    <el-menu-item index="/teacher/tasks">实训任务</el-menu-item>
+                    <el-menu-item v-if="codeRunnerOn" index="/teacher/online-practice">在线实训模板</el-menu-item>
+                    <el-menu-item index="/teacher/grading-queue">成果批改</el-menu-item>
+                    <el-menu-item index="/teacher/submission-feedbacks">作业反馈</el-menu-item>
+                    <el-menu-item index="/teacher/grading-jobs">批改任务</el-menu-item>
+                    <el-menu-item index="/teacher/statistics">成绩与报表</el-menu-item>
+                    <el-menu-item index="/teacher/export">批量导出</el-menu-item>
+                </el-sub-menu>
+
+                <el-sub-menu index="resource">
+                    <template #title>
+                        <el-icon><component :is="Collection" /></el-icon>
+                        <span>知识资源</span>
+                    </template>
+                    <el-menu-item index="/teacher/knowledge-base">实训知识库</el-menu-item>
+                    <el-menu-item index="/teacher/knowledge-graph">知识图谱</el-menu-item>
+                </el-sub-menu>
+
+                <el-sub-menu index="qb">
+                    <template #title>
+                        <el-icon><component :is="EditPen" /></el-icon>
+                        <span>测评中心</span>
+                    </template>
+                    <el-menu-item index="/teacher/qbank/questions">题库管理</el-menu-item>
+                    <el-menu-item index="/teacher/qbank/practices">练习测评</el-menu-item>
+                    <el-menu-item index="/teacher/qbank/exams">在线考试</el-menu-item>
+                </el-sub-menu>
+
+                <el-sub-menu index="analytics">
+                    <template #title>
+                        <el-icon><component :is="Monitor" /></el-icon>
+                        <span>学情分析</span>
+                    </template>
+                    <el-menu-item index="/teacher/big-screen">数据大屏</el-menu-item>
+                    <el-menu-item index="/teacher/assistant-stats">学生助手统计</el-menu-item>
+                    <el-menu-item index="/teacher/class-weak-analysis">能力画像 / 薄弱点</el-menu-item>
+                </el-sub-menu>
+
                 <el-menu-item index="/teacher/settings">
-                    <el-icon>
-                        <component :is="Setting" />
-                    </el-icon>
+                    <el-icon><component :is="Setting" /></el-icon>
                     <span>我的设置</span>
                 </el-menu-item>
             </el-menu>
         </aside>
-        <main class="main-content">
-            <header class="top-header">
+        <main class="main-content app-main">
+            <header class="top-header app-topbar">
                 <div class="header-left">
                     <div>
                         <span class="page-title">{{ pageTitle }}</span>
@@ -108,43 +98,48 @@
                     <el-button link @click="handleLogout">退出登录</el-button>
                 </div>
             </header>
-            <div class="main-scroll layout-main-scroll">
-              <router-view v-slot="{ Component }">
+            <div class="main-scroll layout-main-scroll app-main-scroll">
+              <router-view v-slot="{ Component, route }">
                 <transition name="sg-view" mode="out-in">
-                  <component :is="Component" />
+                  <keep-alive v-if="route.meta.keepAlive" :max="12">
+                    <component :is="Component" :key="route.name" />
+                  </keep-alive>
+                  <component v-else :is="Component" :key="route.fullPath" />
                 </transition>
               </router-view>
             </div>
+            <GradingJobProgressPanel base-path="/teacher" />
         </main>
     </div>
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import {
     PieChart,
-    OfficeBuilding,
-    Bell,
     Document,
-    TrendCharts,
     Setting,
-    Download,
     Collection,
     Monitor,
-    ChatDotRound,
     Reading,
     EditPen,
-    Timer,
 } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { logoutAndGoLogin } from '../utils/authLogout'
 import UserAvatar from '../components/UserAvatar.vue'
 import NotificationBell from '../components/NotificationBell.vue'
+import GradingJobProgressPanel from '../components/GradingJobProgressPanel.vue'
+import SidebarBrand from '../components/SidebarBrand.vue'
+import { probeCodeRunnerEnabled } from '../composables/useCodeRunnerFeature'
+
+const codeRunnerOn = ref(false)
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+
+const defaultOpeneds = ['practice']
 
 const profileOneLine = computed(() => {
     const u = userStore.user
@@ -155,130 +150,227 @@ const profileOneLine = computed(() => {
 
 const activeMenu = computed(() => {
     const path = route.path
-    if (path.startsWith('/teacher/tasks')) return '/teacher/tasks'
-    if (path.startsWith('/teacher/submissions')) return '/teacher/tasks'
-    if (path.startsWith('/teacher/grading')) return '/teacher/tasks'
+    if (path.startsWith('/teacher/grading-jobs')) return '/teacher/grading-jobs'
+    if (path.startsWith('/teacher/grading-queue') || path.startsWith('/teacher/grading/')) return '/teacher/grading-queue'
+    if (path.startsWith('/teacher/tasks') || path.startsWith('/teacher/submissions')) return '/teacher/tasks'
+    if (path.startsWith('/teacher/online-practice')) return '/teacher/online-practice'
+    if (path.startsWith('/teacher/courses')) return '/teacher/courses'
+    if (path.startsWith('/teacher/teaching-classes') || path.startsWith('/teacher/training-calendar') || path.startsWith('/teacher/project-templates')) {
+        if (path.includes('project-templates')) return '/teacher/courses'
+        return path.startsWith('/teacher/training-calendar') ? '/teacher/teaching-classes' : path
+    }
     if (path.startsWith('/teacher/class-announcements')) return '/teacher/class-announcements'
-    if (path.startsWith('/teacher/classes')) return '/teacher/classes'
     if (path.startsWith('/teacher/export')) return '/teacher/export'
     if (path.startsWith('/teacher/knowledge-base')) return '/teacher/knowledge-base'
+    if (path.startsWith('/teacher/knowledge-graph')) return '/teacher/knowledge-graph'
     if (path.startsWith('/teacher/big-screen')) return '/teacher/big-screen'
     if (path.startsWith('/teacher/assistant-stats')) return '/teacher/assistant-stats'
+    if (path.startsWith('/teacher/class-weak-analysis')) return '/teacher/class-weak-analysis'
+    if (path.startsWith('/teacher/classes')) return '/teacher/classes'
     if (path.startsWith('/teacher/qbank/questions')) return '/teacher/qbank/questions'
     if (path.startsWith('/teacher/qbank/practices')) return '/teacher/qbank/practices'
     if (path.startsWith('/teacher/qbank/exams')) return '/teacher/qbank/exams'
     if (path.startsWith('/teacher/settings')) return '/teacher/settings'
+    if (path.startsWith('/teacher/statistics')) return '/teacher/statistics'
     return path
 })
 
 const pageTitle = computed(() => {
     const p = route.path
     const titles = {
-        '/teacher/dashboard': '数据概览',
-        '/teacher/classes': '班级管理',
+        '/teacher/dashboard': '教师工作台',
+        '/teacher/courses': '我的课程',
+        '/teacher/teaching-classes': '我的教学班',
         '/teacher/class-announcements': '班级公告',
-        '/teacher/tasks': '任务管理',
-        '/teacher/statistics': '成绩统计',
-        '/teacher/submissions': '作业列表',
-        '/teacher/grading': '批改详情',
-        '/teacher/settings': '我的设置',
+        '/teacher/tasks': '实训任务',
+        '/teacher/online-practice': '在线实训模板',
+        '/teacher/grading-queue': '成果批改',
+        '/teacher/grading-jobs': 'AI 批改任务中心',
+        '/teacher/statistics': '成绩与报表',
         '/teacher/export': '批量导出',
         '/teacher/knowledge-base': '实训知识库',
+        '/teacher/knowledge-graph': '知识图谱',
         '/teacher/big-screen': '数据大屏',
         '/teacher/assistant-stats': '学生助手统计',
+        '/teacher/class-weak-analysis': '能力画像 / 薄弱点',
+        '/teacher/classes': '行政班工作台',
         '/teacher/qbank/questions': '题库管理',
-        '/teacher/qbank/practices': '习题练习',
+        '/teacher/qbank/practices': '练习测评',
         '/teacher/qbank/exams': '在线考试',
+        '/teacher/settings': '我的设置',
+        '/teacher/project-templates': '项目模板',
+        '/teacher/training-calendar': '实训日历',
     }
-    if (p.match(/^\/teacher\/classes\/[^/]+\/students$/)) return '班级学生管理'
+    if (p.startsWith('/teacher/online-practice/') && p.includes('/edit')) return '编辑在线实训模板'
+    if (p === '/teacher/online-practice/create') return '新建在线实训模板'
     if (p.startsWith('/teacher/classes/')) return '班级工作台'
-    if (p.startsWith('/teacher/submissions')) return '作业列表'
-    if (p.startsWith('/teacher/grading')) return '批改详情'
+    if (p.startsWith('/teacher/teaching-classes/')) return '教学班详情'
+    if (/^\/teacher\/grading-jobs\/\d+/.test(p)) return '批改任务详情'
+    if (p.startsWith('/teacher/submissions')) return '任务提交与批改'
+    if (p.startsWith('/teacher/grading/')) return '批改详情'
     if (/^\/teacher\/qbank\/exams\/\d+\/monitor/.test(p)) return '考试监考'
     return titles[p] || '智能批改系统'
 })
 
 onMounted(async () => {
     userStore.loadUserFromStorage()
+    codeRunnerOn.value = await probeCodeRunnerEnabled()
     await userStore.fetchUserInfo()
 })
 
 const handleLogout = () => {
-    userStore.logout()
-    ElMessage.success('已退出登录')
-    router.push('/login')
+    logoutAndGoLogin(router)
 }
 </script>
 
 <style scoped>
-.teacher-layout {
-    display: flex;
-    min-height: 100vh;
-    background: var(--sg-bg-page);
-}
-
 .sidebar {
-    width: var(--sg-sidebar-width);
+    --sg-sidebar-brand-bg: #0c1929;
     background: linear-gradient(165deg, var(--sg-sidebar-teacher-from) 0%, #0f2744 45%, var(--sg-sidebar-teacher-to) 100%);
     color: white;
-    flex-shrink: 0;
     box-shadow: 4px 0 28px rgba(8, 47, 73, 0.32);
-    z-index: var(--sg-z-sidebar);
 }
 
-.logo {
-    padding: 22px 16px 20px;
-    text-align: center;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, transparent 100%);
-}
-
-.logo h2 {
-    font-size: 15px;
-    margin: 0;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-}
-
-.logo-sub {
-    margin: 8px 0 0;
-    font-size: 11px;
-    opacity: 0.8;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-}
-
-.sidebar-menu {
+/* 教师侧栏菜单：深色层级体系，覆盖 Element Plus 默认浅灰二级背景 */
+.sidebar-menu--teacher {
     border-right: none;
-    background: transparent;
+    background: transparent !important;
+    --el-menu-bg-color: transparent;
+    --el-menu-hover-bg-color: rgba(255, 255, 255, 0.08);
+    --el-menu-active-color: #ffffff;
 }
 
-.sidebar-menu :deep(.el-menu-item) {
-    color: rgba(255, 255, 255, 0.84);
-    height: 46px;
-    line-height: 46px;
+.sidebar-menu--teacher :deep(.el-menu-item),
+.sidebar-menu--teacher :deep(.el-sub-menu__title) {
+    color: rgba(255, 255, 255, 0.9);
+    height: 44px;
+    line-height: 44px;
+    border-radius: 8px;
+    margin: 2px 10px;
+    width: calc(100% - 20px) !important;
+    min-width: auto;
+    transition:
+        background 0.2s ease,
+        color 0.2s ease;
 }
 
-.sidebar-menu :deep(.el-menu-item:hover) {
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
+/* 一级分组：标题左对齐，展开箭头固定在最右侧 */
+.sidebar-menu--teacher :deep(.el-sub-menu__title) {
+    display: flex !important;
+    align-items: center;
+    padding-right: 40px !important;
+    position: relative;
+    box-sizing: border-box;
 }
 
-.sidebar-menu :deep(.el-menu-item.is-active) {
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 100%);
-    color: white;
-    border-left: 3px solid rgba(191, 219, 254, 0.95);
-}
-
-.main-content {
+.sidebar-menu--teacher :deep(.el-sub-menu__title > span) {
     flex: 1;
-    display: flex;
-    flex-direction: column;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-menu--teacher :deep(.el-menu-item .el-icon),
+.sidebar-menu--teacher :deep(.el-sub-menu__title .el-icon) {
+    color: rgba(226, 236, 255, 0.92);
+    font-size: 18px;
+}
+
+.sidebar-menu--teacher :deep(.el-menu-item:hover),
+.sidebar-menu--teacher :deep(.el-sub-menu__title:hover) {
+    background: rgba(255, 255, 255, 0.1) !important;
+    color: #ffffff;
+}
+
+/* 一级菜单（无子级）选中 */
+.sidebar-menu--teacher > :deep(.el-menu-item.is-active) {
+    background: rgba(30, 111, 255, 0.2) !important;
+    color: #ffffff;
+    font-weight: 600;
+    border-left: 3px solid #4da3ff;
+    box-shadow: none;
+}
+
+/* 展开中的一级分组标题 */
+.sidebar-menu--teacher :deep(.el-sub-menu.is-opened > .el-sub-menu__title) {
+    background: rgba(255, 255, 255, 0.06) !important;
+    color: #ffffff;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu__title .el-sub-menu__icon-arrow) {
+    position: absolute !important;
+    right: 12px;
+    top: 50%;
+    margin: 0 !important;
+    width: 20px;
+    height: 20px;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: #b8c7da !important;
+    transform: translateY(-50%);
+    transition:
+        transform 0.22s ease,
+        color 0.2s ease;
+    pointer-events: none;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu__title .el-sub-menu__icon-arrow svg) {
+    width: 14px;
+    height: 14px;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu__title:hover .el-sub-menu__icon-arrow) {
+    color: #ffffff !important;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu.is-opened > .el-sub-menu__title .el-sub-menu__icon-arrow) {
+    color: #4da3ff !important;
+    transform: translateY(-50%) rotate(180deg);
+}
+
+/* 二级菜单容器：深色半透明，去掉默认浅灰块 */
+.sidebar-menu--teacher :deep(.el-sub-menu .el-menu) {
+    background: rgba(0, 0, 0, 0.14) !important;
+    padding: 4px 10px 6px 18px;
+    margin: 0 0 4px;
+    border-radius: 8px;
+}
+
+.sidebar-menu--teacher :deep(.el-menu--inline) {
+    background: transparent !important;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu .el-menu-item) {
+    color: #b8c7da;
+    height: 40px;
+    line-height: 40px;
+    padding-left: 12px !important;
+    margin: 2px 0 !important;
+    width: 100% !important;
+    border-radius: 8px;
+    background: transparent !important;
+    border-left: 3px solid transparent;
+    box-shadow: none;
+    font-weight: 400;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu .el-menu-item:hover) {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.sidebar-menu--teacher :deep(.el-sub-menu .el-menu-item.is-active) {
+    color: #ffffff !important;
+    background: rgba(30, 111, 255, 0.18) !important;
+    border-left-color: #4da3ff;
+    font-weight: 600;
+    box-shadow: none;
 }
 
 .top-header {
-    height: var(--sg-header-height);
     background: rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -287,9 +379,7 @@ const handleLogout = () => {
     justify-content: space-between;
     align-items: center;
     padding: 0 24px;
-    flex-shrink: 0;
     box-shadow: var(--sg-shadow-header);
-    z-index: var(--sg-z-header);
 }
 
 .page-title {
@@ -353,8 +443,6 @@ const handleLogout = () => {
 }
 
 .main-scroll {
-    flex: 1;
-    overflow: auto;
     padding: 20px 24px 36px;
     width: 100%;
     box-sizing: border-box;

@@ -17,4 +17,11 @@ router.get(
   reportController.exportClassPdf
 );
 
+router.get(
+  '/practice/pdf',
+  authenticateToken,
+  requireRole(['admin', 'teacher']),
+  reportController.exportPracticePdf
+);
+
 module.exports = router;

@@ -2,9 +2,15 @@ const pool = require('../config/database');
 const { gradeSubmission } = require('./aiGrading');
 const { getSystemConfigs } = require('./llmClient');
 const { safeNotify, notifyUser } = require('./notify');
-const { buildRagQueryText, retrieveTeacherKbContext } = require('./ragRetrieve');
 const { buildFinalFromGradingRow } = require('./gradingFinal');
 const cache = require('./cacheService');
+const { buildCodeRunWorkTextAppend } = require('./codeRunWorkText');
+const { prepareSubmissionPromptText } = require('./promptSummarize');
+const { buildGradingWorkText } = require('./submissionContentBuild');
+const { listAttachmentsForSubmission } = require('../services/submissionAttachmentService');
+const { enrichTaskForGradingCached, getCachedTaskGradingContext } = require('./gradingTaskContextCache');
+const { retrieveTeacherKbContextCached } = require('./gradingRagCache');
+const { isBullmqEnabled } = require('./bullmqGradingConfig');
 
 const PRIORITY_SINGLE = 1;
 const PRIORITY_BATCH = 2;
@@ -54,10 +60,17 @@ async function persistFinalScoreForSubmission(submissionId) {
   return finalScore;
 }
 
-async function runSingleGrading(submissionId) {
+async function runSingleGrading(submissionId, options = {}) {
+  const onStage = typeof options.onStage === 'function' ? options.onStage : () => {};
+  const metrics = options.metrics || null;
+  const llmStarted = Date.now();
+
+  if (onStage) await onStage('loading_context');
+
   const [submissions] = await pool.query(
     `
-      SELECT s.id, s.student_id, s.content, s.archive_extracted_text, s.file_name, s.task_id, t.title, t.requirements, t.scoring_criteria,
+      SELECT s.id, s.student_id, s.content, s.submission_text, s.code_content, s.code_language,
+             s.archive_extracted_text, s.file_name, s.task_id, t.title, t.requirements, t.scoring_criteria,
              t.scenario_type, t.enterprise_standard,
              t.evaluation_metrics, t.max_score, t.score_ai_weight, t.score_human_weight,
              t.campus_grade_weight, t.enterprise_grade_weight, t.step_checklist, t.difficulty_level,
@@ -76,12 +89,22 @@ async function runSingleGrading(submissionId) {
   }
 
   const submission = submissions[0];
-  const workText =
-    (submission.archive_extracted_text != null &&
-      String(submission.archive_extracted_text).trim()) ||
-    submission.content ||
-    submission.file_name;
-  const task = {
+  const attachments = await listAttachmentsForSubmission(submission);
+  const baseWorkText = buildGradingWorkText(submission, attachments);
+  const codeRunBlock = await buildCodeRunWorkTextAppend(submissionId);
+  const rawWorkText = codeRunBlock ? `${baseWorkText}\n\n${codeRunBlock}` : baseWorkText;
+  const { text: workText, summarized } = prepareSubmissionPromptText(rawWorkText);
+  if (metrics) metrics.promptSummarized = summarized;
+  if (summarized && isBullmqEnabled()) {
+    console.info('[runSingleGrading] prompt_summarized=true', {
+      gradingJobId: options.gradingJobId,
+      gradingJobItemId: options.gradingJobItemId,
+      submissionId: Number(submissionId),
+    });
+  }
+
+  let task = {
+    id: submission.task_id,
     title: submission.title,
     requirements: submission.requirements,
     scoring_criteria: submission.scoring_criteria,
@@ -93,11 +116,25 @@ async function runSingleGrading(submissionId) {
     difficulty_level: submission.difficulty_level,
   };
 
-  const ragQuery = buildRagQueryText(task, workText);
-  const ragContext = await retrieveTeacherKbContext(submission.task_created_by, ragQuery);
+  const tcStart = Date.now();
+  task = await enrichTaskForGradingCached(task, submission.task_id);
+  if (metrics) metrics.taskContextCostMs = (metrics.taskContextCostMs || 0) + (Date.now() - tcStart);
+
+  if (onStage) await onStage('rag_retrieving');
+  const ragStart = Date.now();
+  const taskContext = await getCachedTaskGradingContext(submission.task_id);
+  const ragContext = await retrieveTeacherKbContextCached(
+    submission.task_created_by,
+    task,
+    taskContext
+  );
+  if (metrics) metrics.ragCostMs = (metrics.ragCostMs || 0) + (Date.now() - ragStart);
+
+  if (onStage) await onStage('llm_grading');
   const gradingResult = await gradeSubmission(task, workText, {
     ragContext,
-    submissionFileName: submission.file_name,
+    submissionFileName: attachments.map((a) => a.originalName || a.fileName).filter(Boolean).join(', ') || submission.file_name,
+    enrichCurriculum: false,
     gradingProgressMeta: {
       submissionId: Number(submissionId),
       classId: submission.task_class_id,
@@ -105,7 +142,10 @@ async function runSingleGrading(submissionId) {
       studentId: submission.student_id,
     },
   });
+  if (metrics) metrics.llmCostMs = (metrics.llmCostMs || 0) + (Date.now() - llmStarted);
 
+  if (onStage) await onStage('saving_result');
+  const saveStart = Date.now();
   const [existing] = await pool.query('SELECT id, human_score FROM grading_results WHERE submission_id = ?', [
     submissionId,
   ]);
@@ -148,6 +188,7 @@ async function runSingleGrading(submissionId) {
   }
 
   const finalScore = await persistFinalScoreForSubmission(submissionId);
+  if (metrics) metrics.saveCostMs = (metrics.saveCostMs || 0) + (Date.now() - saveStart);
 
   const stuId = toNumberOrNull(submission.student_id);
   if (stuId != null) {
@@ -292,6 +333,8 @@ function enqueueBatchItem(submissionId) {
 module.exports = {
   enqueueSingle,
   enqueueBatchItem,
+  runSingleGrading,
+  markGradingFailed,
   PRIORITY_SINGLE,
   PRIORITY_BATCH,
 };

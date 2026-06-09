@@ -11,6 +11,18 @@ router.get(
 );
 router.get('/class/:classId', authenticateToken, requireRole(['admin', 'teacher']), dashboardController.getClassStatistics);
 router.get('/class/:classId/export', authenticateToken, requireRole(['admin', 'teacher']), dashboardController.exportClassScores);
+router.get(
+  '/practice-stats',
+  authenticateToken,
+  requireRole(['admin', 'teacher']),
+  dashboardController.getPracticeStatistics
+);
+router.get(
+  '/practice-export',
+  authenticateToken,
+  requireRole(['admin', 'teacher']),
+  dashboardController.exportPracticeScores
+);
 router.get('/classes', authenticateToken, requireRole(['admin', 'teacher']), dashboardController.getAllClassStatistics);
 router.get(
   '/big-screen',

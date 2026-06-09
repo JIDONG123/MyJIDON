@@ -1,6 +1,7 @@
 /**
  * Socket.IO 服务端推送：与业务解耦，仅发轻量 payload，前端收到后自行调接口刷新。
  * 房间隔离：学生 class:{id}:s、教师 class:{id}:t、企业 class:{id}:e、管理员 role:admin、个人 user:{id}、任务 task:{id}
+ * AI 批改任务进度：domain=grading_job → user:{teacherId} + role:admin
  */
 
 let ioRef = null;
@@ -13,17 +14,47 @@ function getIO() {
   return ioRef;
 }
 
-function emitRooms(rooms, payload) {
-  if (!ioRef || !rooms || !rooms.length) return;
-  const seen = new Set();
+function getCrossProcessEmitter() {
   try {
-    for (const r of rooms) {
-      if (!r || seen.has(r)) continue;
-      seen.add(r);
-      ioRef.to(r).emit('rt', payload);
+    return require('./socketIoEmitter').getSocketIoEmitter();
+  } catch {
+    return null;
+  }
+}
+
+function emitRooms(rooms, payload) {
+  if (!rooms || !rooms.length) return;
+  const seen = new Set();
+  const uniqueRooms = [];
+  for (const r of rooms) {
+    if (!r || seen.has(r)) continue;
+    seen.add(r);
+    uniqueRooms.push(r);
+  }
+  if (!uniqueRooms.length) return;
+
+  const emitOne = (target) => {
+    for (const r of uniqueRooms) {
+      target.to(r).emit('rt', payload);
     }
-  } catch (e) {
-    console.warn('[realtimeEmit]', e && e.message ? e.message : e);
+  };
+
+  if (ioRef) {
+    try {
+      emitOne(ioRef);
+      return;
+    } catch (e) {
+      console.warn('[realtimeEmit]', e && e.message ? e.message : e);
+    }
+  }
+
+  const emitter = getCrossProcessEmitter();
+  if (emitter) {
+    try {
+      emitOne(emitter);
+    } catch (e) {
+      console.warn('[realtimeEmit][emitter]', e && e.message ? e.message : e);
+    }
   }
 }
 
@@ -136,6 +167,34 @@ function emitGradingProgress(meta = {}) {
   }
 }
 
+/** AI 批改任务进度：推送到发起教师 user:{id}，管理员 role:admin 同步接收 */
+function emitGradingJobProgress(meta = {}) {
+  const payload = {
+    domain: 'grading_job',
+    action: meta.action || 'progress',
+    ts: Date.now(),
+    jobId: num(meta.jobId),
+    status: meta.status || null,
+    scopeType: meta.scopeType || null,
+    taskId: num(meta.taskId),
+    taskTitle: meta.taskTitle || null,
+    totalCount: meta.totalCount ?? 0,
+    finishedCount: meta.finishedCount ?? 0,
+    successCount: meta.successCount ?? 0,
+    failedCount: meta.failedCount ?? 0,
+    progress: meta.progress ?? 0,
+    message: meta.message || null,
+    submissionId: num(meta.submissionId),
+    legacyBatchId: meta.legacyBatchId || null,
+    notifyType: meta.notifyType || null,
+  };
+  const teacherId = num(meta.teacherId);
+  const rooms = [];
+  if (teacherId != null) rooms.push(`user:${teacherId}`);
+  rooms.push('role:admin');
+  emitRooms(rooms, payload);
+}
+
 function emitSimilarity(classId, taskId, extra = {}) {
   emitClassStaff(classId, {
     domain: 'similarity',
@@ -229,6 +288,30 @@ function emitPractice(classId, practiceId, action, extra = {}) {
   else emitRooms(['role:admin'], payload);
 }
 
+/** 教学班题库/考试推送：tc:{id}:s / tc:{id}:t 房间（见 socketServer 入房） */
+function emitTeachingClassQb(teachingClassId, payload) {
+  const tcId = num(teachingClassId);
+  if (tcId == null) {
+    emitRooms(['role:admin'], payload);
+    return;
+  }
+  emitRooms([`tc:${tcId}:s`, `tc:${tcId}:t`, 'role:admin'], payload);
+}
+
+/** 教学班题库/考试/练习变更：推送到 tc 房间 + 管理员 */
+function emitTeachingClassQb(teachingClassId, payload) {
+  const tcid = num(teachingClassId);
+  if (tcid == null) {
+    emitRooms(['role:admin'], payload);
+    return;
+  }
+  emitRooms([`tc:${tcid}:s`, `tc:${tcid}:t`, 'role:admin'], {
+    teachingClassId: tcid,
+    ts: Date.now(),
+    ...payload,
+  });
+}
+
 function emitQuestions(extra = {}) {
   emitRooms(['role:admin'], { domain: 'qb_questions', action: 'mutate', ts: Date.now(), ...extra });
 }
@@ -246,6 +329,7 @@ module.exports = {
   emitSubmissionsStaff,
   emitSubmissionStudent,
   emitGradingProgress,
+  emitGradingJobProgress,
   emitSimilarity,
   emitQb,
   emitScores,
@@ -256,5 +340,6 @@ module.exports = {
   emitSystemSettings,
   emitExam,
   emitPractice,
+  emitTeachingClassQb,
   emitQuestions,
 };

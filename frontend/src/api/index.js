@@ -1,4 +1,6 @@
 import axios from 'axios'
+import { getToken } from '../utils/authStorage'
+import { forceAuthSessionEnd, resolveAuthSessionMessage } from '../utils/authSessionHandler'
 
 const instance = axios.create({
   baseURL: '/api',
@@ -7,7 +9,7 @@ const instance = axios.create({
 
 instance.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token')
+    const token = getToken()
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -26,11 +28,21 @@ instance.interceptors.response.use(
     const status = error.response?.status
     const reqUrl = String(error.config?.url || '')
     const isPublicAuth =
-      reqUrl.includes('/users/login') || reqUrl.includes('/users/register')
+      reqUrl.includes('/users/login') ||
+      reqUrl.includes('/users/register') ||
+      reqUrl.includes('/auth/captcha')
+
+    const sessionMsg = resolveAuthSessionMessage(error)
+    if (sessionMsg && !isPublicAuth) {
+      forceAuthSessionEnd(sessionMsg)
+      return Promise.reject(error)
+    }
+
     if (status === 401 && !isPublicAuth) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      window.location.href = '/login'
+      forceAuthSessionEnd({
+        code: 'SESSION_EXPIRED',
+        message: '登录状态已过期，请重新登录。',
+      })
     }
     return Promise.reject(error)
   }

@@ -4,6 +4,7 @@ const {
   tryParseJsonObject,
   finalizeGradingFromLlmJson,
 } = require('./gradingNormalize');
+const { buildCurriculumPromptBlock } = require('./taskGradingContext');
 
 function scenarioHint(task) {
   const s = task.scenario_type || 'mixed';
@@ -149,9 +150,11 @@ async function gradeWithLlm(task, submissionText, ragContext, options = {}) {
       ? `\n\n【教师私有实训知识库（RAG 检索片段，仅供对标批改使用）】\n${String(ragContext).trim().slice(0, 8000)}\n`
       : '';
 
+  const curriculumBlock = buildCurriculumPromptBlock(task);
+
   const user = `【任务标题】\n${task.title || ''}\n\n【任务要求（教学侧）】\n${reqText}\n\n【评分说明/量规】\n${
     scoreCrit || '（未单独填写，请参考维度配置）'
-  }\n\n【企业或岗位能力标准（若有）】\n${entStd || '（未配置）'}\n\n【评价维度配置】\n${metricsJson}\n满分：${maxScore}\n${stepChecklistBlock(task)}${codeStyleBlock(
+  }\n\n【企业或岗位能力标准（若有）】\n${entStd || '（未配置）'}${curriculumBlock}\n\n【评价维度配置】\n${metricsJson}\n满分：${maxScore}\n${stepChecklistBlock(task)}${codeStyleBlock(
     fileName
   )}\n${kbSection}\n【学生提交文本（已由系统从文档/PDF/说明中提取）】\n${(
     submissionText || ''
@@ -182,11 +185,16 @@ async function gradeWithLlm(task, submissionText, ragContext, options = {}) {
 async function gradeSubmission(task, submissionText, options = {}) {
   const ragContext = options.ragContext || '';
   const submissionFileName = options.submissionFileName || '';
+  let gradingTask = task;
+  if (options.enrichCurriculum !== false) {
+    const { enrichTaskForGrading } = require('./taskGradingContext');
+    gradingTask = await enrichTaskForGrading(task, task.id || options.taskId);
+  }
 
   if (String(process.env.USE_LANGCHAIN_GRADING || '').trim() === '1') {
     try {
       const { runLangChainDeepGrading } = require('./langchainGradingService');
-      const deep = await runLangChainDeepGrading(task, submissionText, ragContext, {
+      const deep = await runLangChainDeepGrading(gradingTask, submissionText, ragContext, {
         submissionFileName,
         progressMeta: options.gradingProgressMeta || null,
       });
@@ -197,12 +205,12 @@ async function gradeSubmission(task, submissionText, options = {}) {
   }
 
   try {
-    const llm = await gradeWithLlm(task, submissionText, ragContext, { submissionFileName });
+    const llm = await gradeWithLlm(gradingTask, submissionText, ragContext, { submissionFileName });
     if (llm) return llm;
   } catch (e) {
     console.error('LLM 批改失败，回退演示模式:', e.message);
   }
-  return mockGradeSubmission(task, submissionText, { submissionFileName });
+  return mockGradeSubmission(gradingTask, submissionText, { submissionFileName });
 }
 
 module.exports = {

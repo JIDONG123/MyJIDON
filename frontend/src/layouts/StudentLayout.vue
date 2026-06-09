@@ -1,16 +1,25 @@
 <template>
-  <div class="student-layout">
-    <aside class="sidebar" :class="{ 'sidebar--exam-locked': examNavLocked }">
-      <div class="logo">
-        <h2>校企实训学习端</h2>
-        <p class="logo-sub">提交 · 报告</p>
-      </div>
+  <div class="student-layout app-shell">
+    <aside class="sidebar app-sidebar" :class="{ 'sidebar--exam-locked': examNavLocked }">
+      <SidebarBrand title="校企实训学习端" subtitle="提交 · 报告" />
       <el-menu router :default-active="activeMenu" class="sidebar-menu">
         <el-menu-item index="/student/tasks">
           <el-icon>
             <component :is="Document" />
           </el-icon>
-          <span>实训任务</span>
+          <span>实训中心</span>
+        </el-menu-item>
+        <el-menu-item v-if="codeRunnerOn" index="/student/online-practice">
+          <el-icon>
+            <component :is="Cpu" />
+          </el-icon>
+          <span>在线实训</span>
+        </el-menu-item>
+        <el-menu-item index="/student/training-calendar">
+          <el-icon>
+            <component :is="Calendar" />
+          </el-icon>
+          <span>实训日历</span>
         </el-menu-item>
         <el-menu-item index="/student/submissions">
           <el-icon>
@@ -48,6 +57,12 @@
           </el-icon>
           <span>学情画像</span>
         </el-menu-item>
+        <el-menu-item index="/student/knowledge-graph">
+          <el-icon>
+            <component :is="Share" />
+          </el-icon>
+          <span>知识图谱</span>
+        </el-menu-item>
         <el-menu-item index="/student/assistant">
           <el-icon>
             <component :is="ChatDotRound" />
@@ -68,8 +83,8 @@
         </el-menu-item>
       </el-menu>
     </aside>
-    <main class="main-content">
-      <header class="top-header">
+    <main class="main-content app-main">
+      <header class="top-header app-topbar">
         <div class="header-left">
           <div>
             <span class="page-title">{{ pageTitle }}</span>
@@ -96,12 +111,19 @@
         show-icon
         :closable="false"
         title="考试中：侧栏菜单已锁定，请先交卷或退出考试后再使用其他功能。"
-        class="exam-lock-banner"
+        class="exam-lock-banner app-shell-banner"
       />
-      <div class="main-scroll layout-main-scroll" :class="{ 'layout-main-scroll--workspace': route.meta.studentWorkspace }">
-        <router-view v-slot="{ Component }">
+      <div
+        class="main-scroll layout-main-scroll app-main-scroll"
+        :class="{ 'layout-main-scroll--workspace': route.meta.studentWorkspace }"
+      >
+        <router-view v-slot="{ Component, route }">
           <transition name="sg-view" mode="out-in">
+            <keep-alive v-if="route.meta.keepAlive" :max="10">
+              <component :is="Component" :key="route.name" class="route-view-root" />
+            </keep-alive>
             <component
+              v-else
               :is="Component"
               :key="route.fullPath"
               class="route-view-root"
@@ -115,14 +137,32 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useStudentExamUiStore } from '../stores/studentExamUi'
-import { Document, Upload, Trophy, Setting, Memo, DataAnalysis, ChatDotRound, Monitor, Notebook, Timer } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import {
+  Document,
+  Upload,
+  Trophy,
+  Setting,
+  Memo,
+  DataAnalysis,
+  ChatDotRound,
+  Monitor,
+  Notebook,
+  Timer,
+  Share,
+  Calendar,
+  Cpu,
+} from '@element-plus/icons-vue'
+import { logoutAndGoLogin } from '../utils/authLogout'
 import UserAvatar from '../components/UserAvatar.vue'
 import NotificationBell from '../components/NotificationBell.vue'
+import SidebarBrand from '../components/SidebarBrand.vue'
+import { probeCodeRunnerEnabled } from '../composables/useCodeRunnerFeature'
+
+const codeRunnerOn = ref(false)
 
 const route = useRoute()
 const router = useRouter()
@@ -142,8 +182,11 @@ const examNavLocked = computed(() => !!route.meta.studentExamLock && examUi.exam
 const activeMenu = computed(() => {
   const path = route.path
   if (path.startsWith('/student/tasks')) return '/student/tasks'
+  if (path.startsWith('/student/online-practice')) return '/student/online-practice'
+  if (path.startsWith('/student/training-calendar')) return '/student/training-calendar'
   if (path.startsWith('/student/archive')) return '/student/archive'
   if (path.startsWith('/student/learning')) return '/student/learning'
+  if (path.startsWith('/student/knowledge-graph')) return '/student/knowledge-graph'
   if (path.startsWith('/student/assistant')) return '/student/assistant'
   if (path.startsWith('/student/big-screen')) return '/student/big-screen'
   if (path.startsWith('/student/qbank/practices')) return '/student/qbank/practices'
@@ -155,19 +198,23 @@ const activeMenu = computed(() => {
 const pageTitle = computed(() => {
   const p = route.path
   const titles = {
-    '/student/tasks': '实训任务',
+    '/student/tasks': '实训中心',
+    '/student/online-practice': '在线实训',
+    '/student/training-calendar': '实训日历',
     '/student/submissions': '我的提交',
     '/student/results': '成绩查询',
     '/student/results/detail': '成绩详情',
     '/student/settings': '我的设置',
     '/student/archive': '实训档案',
     '/student/learning': '学情画像',
+    '/student/knowledge-graph': '知识图谱',
     '/student/assistant': 'AI 答疑助手',
-    '/student/big-screen': '数据大屏',
+    '/student/big-screen': '班级学情看板',
     '/student/qbank/practices': '习题练习',
     '/student/qbank/exams': '在线考试',
   }
   if (/^\/student\/tasks\/\d+/.test(p)) return '任务详情'
+  if (/^\/student\/online-practice\/\d+/.test(p)) return '在线实训'
   if (/^\/student\/results\/\d+/.test(p)) return '成绩详情'
   if (/^\/student\/qbank\/practices\/\d+\/take/.test(p)) return '练习作答'
   if (/^\/student\/qbank\/exams\/\d+\/take/.test(p)) return '考试作答'
@@ -176,55 +223,23 @@ const pageTitle = computed(() => {
 
 onMounted(async () => {
   userStore.loadUserFromStorage()
+  codeRunnerOn.value = await probeCodeRunnerEnabled()
   if (userStore.user?.role === 'student') {
     await userStore.fetchUserInfo()
   }
 })
 
 const handleLogout = () => {
-  userStore.logout()
-  ElMessage.success('已退出登录')
-  router.push('/login')
+  logoutAndGoLogin(router)
 }
 </script>
 
 <style scoped>
-.student-layout {
-  display: flex;
-  min-height: 100vh;
-  background: var(--sg-bg-page);
-}
-
 .sidebar {
-  width: var(--sg-sidebar-width);
+  --sg-sidebar-brand-bg: #064e3b;
   background: linear-gradient(165deg, var(--sg-sidebar-student-from) 0%, #0f3d32 48%, var(--sg-sidebar-student-to) 100%);
   color: white;
-  flex-shrink: 0;
   box-shadow: 4px 0 28px rgba(6, 78, 59, 0.28);
-  z-index: var(--sg-z-sidebar);
-}
-
-.logo {
-  padding: 22px 14px 20px;
-  text-align: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, transparent 100%);
-}
-
-.logo h2 {
-  font-size: 14px;
-  margin: 0;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
-}
-
-.logo-sub {
-  margin: 8px 0 0;
-  font-size: 11px;
-  opacity: 0.8;
-  font-weight: 500;
-  letter-spacing: 0.04em;
 }
 
 .sidebar-menu {
@@ -260,15 +275,7 @@ const handleLogout = () => {
   border-radius: 0 0 10px 10px;
 }
 
-.main-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
 .top-header {
-  height: var(--sg-header-height);
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -277,9 +284,7 @@ const handleLogout = () => {
   justify-content: space-between;
   align-items: center;
   padding: 0 24px;
-  flex-shrink: 0;
   box-shadow: var(--sg-shadow-header);
-  z-index: var(--sg-z-header);
 }
 
 .page-title {
@@ -343,26 +348,8 @@ const handleLogout = () => {
 }
 
 .main-scroll {
-  flex: 1;
-  overflow: auto;
   padding: 20px 24px 36px;
   width: 100%;
   box-sizing: border-box;
-}
-
-.layout-main-scroll--workspace {
-  overflow: hidden;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.route-view-root--workspace {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 </style>

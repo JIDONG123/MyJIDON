@@ -38,10 +38,16 @@ watch(
   box-sizing: border-box;
 }
 
+html,
+body,
+#app {
+  height: 100%;
+}
+
 body {
   font-family: var(--el-font-family);
   background: var(--sg-bg-page);
-  min-height: 100vh;
+  min-height: 100%;
   color: var(--sg-text);
   font-size: 14px;
   line-height: 1.55;
@@ -49,7 +55,7 @@ body {
 }
 
 .app-container {
-  min-height: 100vh;
+  min-height: 100%;
 }
 
 .sg-fade-enter-active,

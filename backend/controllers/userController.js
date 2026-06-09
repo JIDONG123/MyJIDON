@@ -3,7 +3,20 @@ const path = require('path');
 const pool = require('../config/database');
 const jwt = require('jsonwebtoken');
 const cache = require('../utils/cacheService');
-const { validatePasswordPlaintext, hashPassword, verifyPassword } = require('../utils/passwordPolicy');
+const { validatePasswordPlaintext, hashPassword, hashInitialStudentPassword, hashInitialTeacherPassword, verifyPassword, preparePasswordStorage } = require('../utils/passwordPolicy');
+const { verifyCaptcha } = require('../utils/captchaService');
+const {
+  findUserByLoginIdentifier,
+  LOGIN_FAIL_MESSAGE,
+  IDENTIFIER_CONFLICT_MESSAGE,
+} = require('../services/loginIdentifierService');
+const { createUserSession, logoutUserSession } = require('../services/userSessionService');
+const {
+  validateFileBasic,
+  detectImageSafety,
+  validateAccountFields,
+  auditAndReturn,
+} = require('../services/contentSafetyService');
 
 const uploadRoot = process.env.UPLOAD_PATH
   ? path.resolve(process.env.UPLOAD_PATH)
@@ -56,7 +69,9 @@ const USER_ME_SQL_NO_AVATAR = `
 
 const USER_ME_SQL_WITH_PROFILE = `
       SELECT u.id, u.username, u.real_name, u.role, u.class_id, u.email,
-             u.phone, u.student_no, u.profile_bio, u.contact_extra,
+             u.phone, u.student_no, u.teacher_no, u.profile_bio, u.contact_extra,
+             IFNULL(u.must_change_password, 0) AS must_change_password,
+             u.password_changed_at,
              u.department AS user_department, u.avatar,
              c.class_name AS cls_class_name, c.major AS cls_major, c.grade AS cls_grade,
              tea.id AS class_teacher_id,
@@ -88,6 +103,34 @@ function parseJsonMaybe(val) {
   } catch {
     return null;
   }
+}
+
+async function assertUsernameAvailable(username, excludeId = null) {
+  const u = String(username || '').trim();
+  if (u.length < 2) {
+    return { ok: false, message: '用户名至少 2 个字符' };
+  }
+  if (u.length > 64) {
+    return { ok: false, message: '用户名过长' };
+  }
+  if (!/^[a-zA-Z0-9_\u4e00-\u9fa5]+$/.test(u)) {
+    return { ok: false, message: '用户名仅支持字母、数字、下划线与中文' };
+  }
+  let sql = 'SELECT id FROM users WHERE username = ?';
+  const params = [u];
+  if (excludeId != null) {
+    sql += ' AND id != ?';
+    params.push(excludeId);
+  }
+  const [rows] = await pool.query(sql, params);
+  if (rows.length) {
+    return { ok: false, message: '用户名已存在' };
+  }
+  return { ok: true, username: u };
+}
+
+function passwordsMatch(a, b) {
+  return String(a ?? '') === String(b ?? '');
 }
 
 function weakPointsFromArchiveRow(row) {
@@ -134,8 +177,8 @@ const register = async (req, res) => {
     const cid = classId === undefined || classId === null || classId === '' ? null : classId;
 
     const [result] = await pool.query(
-      'INSERT INTO users (username, password, real_name, role, email, class_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, hp.hash, realName, 'student', email, cid]
+      'INSERT INTO users (username, password, password_plain, real_name, role, email, class_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [username, hp.hash, String(password), realName, 'student', email, cid]
     );
 
     res.status(201).json({ success: true, message: '注册成功', userId: result.insertId });
@@ -145,28 +188,36 @@ const register = async (req, res) => {
   }
 };
 
-const LOGIN_FAIL_BODY = { success: false, message: '用户名或密码错误' };
+const LOGIN_FAIL_BODY = { success: false, message: LOGIN_FAIL_MESSAGE };
 
 const login = async (req, res) => {
   try {
-    const username = String(req.body.username || '').trim();
+    const { captchaId, captchaCode } = req.body;
+    const captchaResult = await verifyCaptcha(captchaId, captchaCode);
+    if (!captchaResult.ok) {
+      return res.status(400).json({ success: false, message: captchaResult.message, code: 'CAPTCHA' });
+    }
+
+    const loginIdentifier = String(req.body.username || '').trim();
     const password = req.body.password;
 
-    if (!username || password == null || password === '') {
+    if (!loginIdentifier || password == null || password === '') {
       return res.status(401).json(LOGIN_FAIL_BODY);
     }
 
-    const [users] = await pool.query(
-      `SELECT id, username, password, real_name, role, class_id, email, department,
-              IFNULL(is_disabled, 0) AS is_disabled, avatar, phone, student_no, profile_bio, contact_extra
-       FROM users WHERE username = ? LIMIT 1`,
-      [username]
-    );
-    if (users.length === 0) {
+    const lookup = await findUserByLoginIdentifier(pool, loginIdentifier);
+    if (!lookup.ok) {
+      if (lookup.code === 'IDENTIFIER_CONFLICT') {
+        return res.status(409).json({
+          success: false,
+          message: IDENTIFIER_CONFLICT_MESSAGE,
+          code: 'IDENTIFIER_CONFLICT',
+        });
+      }
       return res.status(401).json(LOGIN_FAIL_BODY);
     }
 
-    const user = users[0];
+    const user = lookup.user;
     const isValid = await verifyPassword(password, user.password);
 
     if (!isValid) {
@@ -177,15 +228,27 @@ const login = async (req, res) => {
       return res.status(403).json({ success: false, message: '账号已被禁用' });
     }
 
+    const loginIp =
+      String(req.headers['x-forwarded-for'] || '')
+        .split(',')[0]
+        .trim() || req.ip || req.socket?.remoteAddress || null;
+    const userAgent = req.headers['user-agent'] || null;
+    const { sessionId } = await createUserSession(pool, {
+      userId: toNumberOrNull(user.id),
+      loginIp,
+      userAgent,
+    });
+
     const token = jwt.sign(
       {
         id: toNumberOrNull(user.id),
         username: user.username,
         role: user.role,
+        sessionId,
         ...(user.class_id != null ? { class_id: toNumberOrNull(user.class_id) } : {}),
       },
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
     let className = null;
@@ -237,8 +300,11 @@ const login = async (req, res) => {
         avatarUrl: buildAvatarUrl(user.avatar),
         phone: user.phone ?? null,
         studentNo: user.student_no ?? null,
+        teacherNo: user.teacher_no ?? null,
         profileBio: user.profile_bio ?? null,
         contactExtra: user.contact_extra ?? null,
+        mustChangePassword: Number(user.must_change_password) === 1,
+        passwordChangedAt: user.password_changed_at ?? null,
       },
     });
   } catch (error) {
@@ -332,10 +398,13 @@ const getUserInfo = async (req, res) => {
         avatarUrl: buildAvatarUrl(user.avatar),
         phone: user.phone ?? null,
         studentNo: user.student_no ?? null,
+        teacherNo: user.teacher_no ?? null,
         profileBio: user.profile_bio ?? null,
         contactExtra: user.contact_extra ?? null,
         classTeacher,
         managedClasses,
+        mustChangePassword: Number(user.must_change_password) === 1,
+        passwordChangedAt: user.password_changed_at ?? null,
       },
     };
     await cache.setJson(ckey, payload, cache.TTL.userMe);
@@ -395,6 +464,120 @@ const updateMyProfile = async (req, res) => {
   }
 };
 
+/** 教师 / 学生自主修改用户名与登录密码（须验证当前密码） */
+const updateMyCredentials = async (req, res) => {
+  try {
+    const role = req.user?.role;
+    if (!['teacher', 'student'].includes(role)) {
+      return res.status(403).json({ success: false, message: '仅教师或学生可修改登录凭据' });
+    }
+
+    const uid = toNumberOrNull(req.user?.id);
+    const { username, currentPassword, newPassword, confirmPassword } = req.body;
+
+    if (currentPassword == null || String(currentPassword) === '') {
+      return res.status(400).json({ success: false, message: '请输入当前密码以确认身份' });
+    }
+
+    const [rows] = await pool.query('SELECT id, username, password, role FROM users WHERE id = ? LIMIT 1', [uid]);
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    const row = rows[0];
+
+    const okCurrent = await verifyPassword(currentPassword, row.password);
+    if (!okCurrent) {
+      return res.status(400).json({ success: false, message: '当前密码不正确' });
+    }
+
+    const updates = [];
+    const params = [];
+    let usernameChanged = false;
+
+    if (username !== undefined && String(username).trim() !== row.username) {
+      const un = await assertUsernameAvailable(username, uid);
+      if (!un.ok) {
+        return res.status(400).json({ success: false, message: un.message });
+      }
+      updates.push('username = ?');
+      params.push(un.username);
+      usernameChanged = true;
+    }
+
+    const wantsPassword = newPassword != null && String(newPassword).trim() !== '';
+    if (wantsPassword) {
+      if (!passwordsMatch(newPassword, confirmPassword)) {
+        return res.status(400).json({ success: false, message: '两次输入的新密码不一致' });
+      }
+      const prep = await preparePasswordStorage(newPassword);
+      if (!prep.ok) {
+        return res.status(400).json({ success: false, message: prep.message, code: 'PASSWORD_POLICY' });
+      }
+      if (role === 'student') {
+        updates.push(
+          'password = ?',
+          'password_plain = ?',
+          'must_change_password = 0',
+          'password_changed_at = NOW()'
+        );
+        params.push(prep.hash, null);
+      } else {
+        updates.push('password = ?', 'password_plain = ?');
+        params.push(prep.hash, prep.plain);
+      }
+    }
+
+    if (!updates.length) {
+      return res.json({ success: true, message: '无变更', requireRelogin: false });
+    }
+
+    params.push(uid);
+    await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    try {
+      await cache.invalidateUserMe(uid);
+    } catch {
+      /* ignore */
+    }
+
+    res.json({
+      success: true,
+      message: usernameChanged ? '登录凭据已更新，请重新登录' : '密码已更新',
+      requireRelogin: usernameChanged,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '保存失败', error: error.message });
+  }
+};
+
+const getAdminUserPassword = async (req, res) => {
+  try {
+    const targetId = toNumberOrNull(req.params.id);
+    const [rows] = await pool.query(
+      'SELECT id, username, real_name, role, password_plain FROM users WHERE id = ? LIMIT 1',
+      [targetId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    const u = rows[0];
+    if (u.role === 'admin') {
+      return res.status(403).json({ success: false, message: '不能查看管理员密码' });
+    }
+    res.json({
+      success: true,
+      data: {
+        id: toNumberOrNull(u.id),
+        username: u.username,
+        realName: u.real_name,
+        password: u.password_plain || null,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取密码失败', error: error.message });
+  }
+};
+
 const getMyArchive = async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -448,6 +631,44 @@ const uploadMyAvatar = async (req, res) => {
       return res.status(400).json({ success: false, message: '请选择图片文件' });
     }
 
+    const basic = validateFileBasic(req.file, { profile: 'avatar', maxBytes: 2 * 1024 * 1024 });
+    if (!basic.passed) {
+      try {
+        if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      } catch (_) {}
+      return res.status(400).json({ success: false, message: basic.reason || '文件类型不支持' });
+    }
+
+    const imgR = await detectImageSafety(req.file.path, { profile: 'avatar' });
+    if (imgR.riskLevel === 'blocked') {
+      try {
+        if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      } catch (_) {}
+      await auditAndReturn(
+        {
+          targetType: 'avatar',
+          userId: req.user.id,
+          userRole: req.user.role,
+          fileName: req.file.originalname,
+          fileHash: basic.fileHash,
+        },
+        imgR
+      );
+      return res.status(400).json({ success: false, message: imgR.reason || '图片疑似包含违规内容' });
+    }
+    if (imgR.riskLevel === 'suspicious') {
+      await auditAndReturn(
+        {
+          targetType: 'avatar',
+          userId: req.user.id,
+          userRole: req.user.role,
+          fileName: req.file.originalname,
+          fileHash: basic.fileHash,
+        },
+        imgR
+      );
+    }
+
     const rel = path.posix.join('avatars', req.file.filename);
     const [oldRows] = await pool.query('SELECT avatar FROM users WHERE id = ?', [req.user.id]);
     const prev = oldRows[0]?.avatar;
@@ -484,13 +705,21 @@ const searchStudentsForClass = async (req, res) => {
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
     const offset = (page - 1) * pageSize;
     const q = (req.query.q || '').trim();
+    const classId =
+      req.query.classId != null && req.query.classId !== '' ? Number(req.query.classId) : null;
 
-    let where = `u.role = 'student' AND u.class_id IS NULL`;
+    let where = `u.role = 'student'`;
     const params = [];
+    if (classId != null && Number.isFinite(classId)) {
+      where += ' AND u.class_id = ?';
+      params.push(classId);
+    } else {
+      where += ' AND u.class_id IS NULL';
+    }
     if (q.length >= 1) {
       const like = `%${q}%`;
-      where += ` AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,'') LIKE ?)`;
-      params.push(like, like, like);
+      where += ` AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,'') LIKE ? OR IFNULL(u.student_no,'') LIKE ?)`;
+      params.push(like, like, like, like);
     }
 
     const [countRows] = await pool.query(
@@ -501,10 +730,11 @@ const searchStudentsForClass = async (req, res) => {
 
     const [rows] = await pool.query(
       `
-      SELECT u.id, u.username, u.real_name, u.email, u.class_id
+      SELECT u.id, u.username, u.real_name, u.email, u.student_no, u.class_id, c.class_name
       FROM users u
+      LEFT JOIN classes c ON u.class_id = c.id
       WHERE ${where}
-      ORDER BY u.username
+      ORDER BY u.real_name, u.username
       LIMIT ? OFFSET ?
     `,
       [...params, pageSize, offset]
@@ -528,13 +758,30 @@ const listAdminStudents = async (req, res) => {
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 10));
     const offset = (page - 1) * pageSize;
     const q = (req.query.q || '').trim();
+    const classId =
+      req.query.classId != null && req.query.classId !== ''
+        ? Number(req.query.classId)
+        : null;
+    const statusFilter = String(req.query.status || '').trim();
 
     let searchClause = '';
     const baseParams = [];
     if (q) {
       const like = `%${q}%`;
-      searchClause = ' AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,\'\') LIKE ?)';
-      baseParams.push(like, like, like);
+      searchClause =
+        ' AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,\'\') LIKE ? OR IFNULL(u.student_no,\'\') LIKE ? OR IFNULL(u.phone,\'\') LIKE ?)';
+      baseParams.push(like, like, like, like, like);
+    }
+    if (classId != null && Number.isFinite(classId)) {
+      searchClause += ' AND u.class_id = ?';
+      baseParams.push(classId);
+    }
+    if (statusFilter === 'assigned') {
+      searchClause += ' AND u.class_id IS NOT NULL';
+    } else if (statusFilter === 'unassigned') {
+      searchClause += ' AND u.class_id IS NULL';
+    } else if (statusFilter === 'must_change') {
+      searchClause += ' AND IFNULL(u.must_change_password, 0) = 1';
     }
 
     const [countRows] = await pool.query(
@@ -545,7 +792,9 @@ const listAdminStudents = async (req, res) => {
 
     const [rows] = await pool.query(
       `
-      SELECT u.id, u.username, u.real_name, u.email, u.class_id, c.class_name, u.department, u.created_at
+      SELECT u.id, u.username, u.real_name, u.email, u.phone, u.student_no, u.class_id, c.class_name,
+             u.department, u.created_at, IFNULL(u.must_change_password, 0) AS must_change_password,
+             u.password_changed_at
       FROM users u
       LEFT JOIN classes c ON u.class_id = c.id
       WHERE u.role = 'student'${searchClause}
@@ -567,13 +816,27 @@ const listAdminTeachers = async (req, res) => {
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 10));
     const offset = (page - 1) * pageSize;
     const q = (req.query.q || '').trim();
+    const departmentFilter = (req.query.department || '').trim();
+    const statusFilter = String(req.query.status || '').trim();
 
     let searchClause = '';
     const baseParams = [];
     if (q) {
       const like = `%${q}%`;
-      searchClause = ' AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,\'\') LIKE ? OR IFNULL(u.department,\'\') LIKE ?)';
-      baseParams.push(like, like, like, like);
+      searchClause =
+        ' AND (u.username LIKE ? OR u.real_name LIKE ? OR IFNULL(u.email,\'\') LIKE ? OR IFNULL(u.department,\'\') LIKE ? OR IFNULL(u.teacher_no,\'\') LIKE ? OR IFNULL(u.phone,\'\') LIKE ?)';
+      baseParams.push(like, like, like, like, like, like);
+    }
+    if (departmentFilter) {
+      searchClause += ' AND u.department = ?';
+      baseParams.push(departmentFilter);
+    }
+    if (statusFilter === 'must_change') {
+      searchClause += ' AND IFNULL(u.must_change_password, 0) = 1';
+    } else if (statusFilter === 'missing_no') {
+      searchClause += ' AND (u.teacher_no IS NULL OR u.teacher_no = \'\')';
+    } else if (statusFilter === 'normal') {
+      searchClause += ' AND IFNULL(u.must_change_password, 0) = 0 AND u.teacher_no IS NOT NULL AND u.teacher_no <> \'\'';
     }
 
     const [countRows] = await pool.query(
@@ -584,7 +847,8 @@ const listAdminTeachers = async (req, res) => {
 
     const [rows] = await pool.query(
       `
-      SELECT u.id, u.username, u.real_name, u.email, u.department, u.created_at
+      SELECT u.id, u.username, u.real_name, u.email, u.phone, u.teacher_no, u.department, u.created_at,
+             IFNULL(u.must_change_password, 0) AS must_change_password, u.password_changed_at
       FROM users u
       WHERE u.role = 'teacher'${searchClause}
       ORDER BY u.created_at DESC
@@ -601,26 +865,58 @@ const listAdminTeachers = async (req, res) => {
 
 const createStudent = async (req, res) => {
   try {
-    const { username, password, realName, email, classId } = req.body;
+    const { username, realName, email, classId, studentNo, phone } = req.body;
+
+    if (!username || !realName || !studentNo || !phone || !email) {
+      return res.status(400).json({ success: false, message: '请填写用户名、真实姓名、学号、电话号码和邮箱' });
+    }
+
+    const fieldCheck = await validateAccountFields(
+      { username, realName, studentNo, phone, email, className: req.body.className },
+      'student'
+    );
+    if (!fieldCheck.passed) {
+      return res.status(400).json({
+        success: false,
+        message: fieldCheck.errors.map((e) => e.message).join('；'),
+      });
+    }
 
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing.length > 0) {
       return res.status(400).json({ success: false, message: '用户名已存在' });
     }
-
-    const pv = validatePasswordPlaintext(password);
-    if (!pv.ok) {
-      return res.status(400).json({ success: false, message: pv.message, code: 'PASSWORD_POLICY' });
+    const [dupNo] = await pool.query(
+      'SELECT id FROM users WHERE student_no = ? AND student_no IS NOT NULL LIMIT 1',
+      [String(studentNo).trim()]
+    );
+    if (dupNo.length) {
+      return res.status(400).json({ success: false, message: '学号已存在' });
     }
-    const hp = await hashPassword(password);
+    const [dupEmail] = await pool.query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+    if (dupEmail.length) {
+      return res.status(400).json({ success: false, message: '邮箱已被占用' });
+    }
+
+    const hp = await hashInitialStudentPassword(studentNo);
     if (!hp.ok) {
-      return res.status(400).json({ success: false, message: hp.message, code: 'PASSWORD_HASH' });
+      return res.status(400).json({ success: false, message: hp.message });
     }
     const cid = classId === undefined || classId === null || classId === '' ? null : classId;
 
     const [result] = await pool.query(
-      'INSERT INTO users (username, password, real_name, role, email, class_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, hp.hash, realName, 'student', email || null, cid]
+      `INSERT INTO users
+        (username, password, password_plain, real_name, student_no, phone, role, email, class_id, must_change_password)
+       VALUES (?, ?, NULL, ?, ?, ?, 'student', ?, ?, 1)`,
+      [
+        String(username).trim(),
+        hp.hash,
+        String(realName).trim(),
+        String(studentNo).trim(),
+        String(phone).trim(),
+        String(email).trim(),
+        cid,
+      ]
     );
 
     res.status(201).json({ success: true, message: '学生账号创建成功', userId: result.insertId });
@@ -665,25 +961,113 @@ const getUserById = async (req, res) => {
 
 const updateUser = async (req, res) => {
   try {
-    const { realName, email, classId, department, is_disabled } = req.body;
-
-    if (is_disabled !== undefined && is_disabled !== null) {
-      await pool.query(
-        'UPDATE users SET real_name = ?, email = ?, class_id = ?, department = ?, is_disabled = ? WHERE id = ?',
-        [realName, email, classId || null, department || null, is_disabled ? 1 : 0, req.params.id]
-      );
-    } else {
-      await pool.query(
-        'UPDATE users SET real_name = ?, email = ?, class_id = ?, department = ? WHERE id = ?',
-        [realName, email, classId || null, department || null, req.params.id]
-      );
+    const targetId = toNumberOrNull(req.params.id);
+    if (targetId == null) {
+      return res.status(400).json({ success: false, message: '无效用户 ID' });
     }
 
-    try {
-      const targetId = toNumberOrNull(req.params.id);
-      if (targetId != null) {
-        await cache.invalidateUserMe(targetId);
+    const [targetRows] = await pool.query('SELECT id, role, username FROM users WHERE id = ? LIMIT 1', [targetId]);
+    if (!targetRows.length) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    if (targetRows[0].role === 'admin') {
+      return res.status(400).json({ success: false, message: '不能通过此接口修改管理员账号' });
+    }
+
+    const { username, password, confirmPassword, realName, email, classId, department, is_disabled, studentNo, phone, teacherNo } =
+      req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (username !== undefined && String(username).trim() !== targetRows[0].username) {
+      const un = await assertUsernameAvailable(username, targetId);
+      if (!un.ok) {
+        return res.status(400).json({ success: false, message: un.message });
       }
+      updates.push('username = ?');
+      params.push(un.username);
+    }
+
+    const wantsPassword = password != null && String(password).trim() !== '';
+    if (wantsPassword) {
+      if (!passwordsMatch(password, confirmPassword)) {
+        return res.status(400).json({ success: false, message: '两次输入的密码不一致' });
+      }
+      const prep = await preparePasswordStorage(password);
+      if (!prep.ok) {
+        return res.status(400).json({ success: false, message: prep.message, code: 'PASSWORD_POLICY' });
+      }
+      updates.push('password = ?', 'password_plain = ?');
+      params.push(prep.hash, prep.plain);
+    }
+
+    if (realName !== undefined) {
+      updates.push('real_name = ?');
+      params.push(realName);
+    }
+    if (email !== undefined) {
+      updates.push('email = ?');
+      params.push(email);
+    }
+    if (studentNo !== undefined && targetRows[0].role === 'student') {
+      const sn = studentNo === null || studentNo === '' ? null : String(studentNo).trim();
+      if (sn) {
+        const [dup] = await pool.query(
+          'SELECT id FROM users WHERE student_no = ? AND id <> ? LIMIT 1',
+          [sn, targetId]
+        );
+        if (dup.length) {
+          return res.status(400).json({ success: false, message: '学号已被占用' });
+        }
+      }
+      updates.push('student_no = ?');
+      params.push(sn);
+    }
+    if (phone !== undefined && targetRows[0].role === 'student') {
+      updates.push('phone = ?');
+      params.push(phone === null || phone === '' ? null : String(phone).trim());
+    }
+    if (teacherNo !== undefined && targetRows[0].role === 'teacher') {
+      const tn = teacherNo === null || teacherNo === '' ? null : String(teacherNo).trim();
+      if (tn) {
+        const [dup] = await pool.query(
+          'SELECT id FROM users WHERE teacher_no = ? AND id <> ? LIMIT 1',
+          [tn, targetId]
+        );
+        if (dup.length) {
+          return res.status(400).json({ success: false, message: '工号已被占用' });
+        }
+      }
+      updates.push('teacher_no = ?');
+      params.push(tn);
+    }
+    if (phone !== undefined && targetRows[0].role === 'teacher') {
+      updates.push('phone = ?');
+      params.push(phone === null || phone === '' ? null : String(phone).trim());
+    }
+    if (classId !== undefined) {
+      updates.push('class_id = ?');
+      params.push(classId || null);
+    }
+    if (department !== undefined) {
+      updates.push('department = ?');
+      params.push(department || null);
+    }
+    if (is_disabled !== undefined && is_disabled !== null) {
+      updates.push('is_disabled = ?');
+      params.push(is_disabled ? 1 : 0);
+    }
+
+    if (!updates.length) {
+      return res.json({ success: true, message: '无变更' });
+    }
+
+    params.push(targetId);
+    await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    try {
+      await cache.invalidateUserMe(targetId);
       await cache.invalidateAllClassCaches();
       await cache.invalidateDashboardAllCommon();
     } catch {
@@ -692,8 +1076,7 @@ const updateUser = async (req, res) => {
     res.json({ success: true, message: '更新成功' });
     try {
       const rt = require('../utils/realtimeEmit');
-      const tid = toNumberOrNull(req.params.id);
-      rt.emitUsersMutate(tid, { scope: 'admin_update', classId: classId || null });
+      rt.emitUsersMutate(targetId, { scope: 'admin_update', classId: classId || null });
       if (classId) rt.emitClassesMutate({ classId: Number(classId) });
       rt.emitClassesMutate({});
     } catch {
@@ -780,8 +1163,8 @@ const createEnterpriseUser = async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO users (username, password, real_name, role, email, department, class_id) VALUES (?, ?, ?, ?, ?, ?, NULL)',
-      [username, hp.hash, realName, 'enterprise', email, department]
+      'INSERT INTO users (username, password, password_plain, real_name, role, email, department, class_id) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)',
+      [username, hp.hash, String(password), realName, 'enterprise', email, department]
     );
 
     res.status(201).json({
@@ -879,40 +1262,249 @@ const setEnterpriseUserClasses = async (req, res) => {
   }
 };
 
+const getEnterpriseUserTeachingClasses = async (req, res) => {
+  try {
+    const enterpriseId = Number(req.params.id);
+    const [u] = await pool.query(`SELECT id FROM users WHERE id = ? AND role = 'enterprise'`, [enterpriseId]);
+    if (!u.length) {
+      return res.status(404).json({ success: false, message: '企业用户不存在' });
+    }
+    const [rows] = await pool.query(
+      `SELECT tc.id, tc.class_code, tc.class_name, c.course_name, tm.name AS term_name
+       FROM teaching_classes tc
+       INNER JOIN enterprise_teaching_class_access e ON e.teaching_class_id = tc.id AND e.enterprise_user_id = ?
+       INNER JOIN courses c ON c.id = tc.course_id
+       INNER JOIN terms tm ON tm.id = tc.term_id
+       ORDER BY tm.year DESC, tc.class_code`,
+      [enterpriseId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '查询失败', error: error.message });
+  }
+};
+
+const setEnterpriseUserTeachingClasses = async (req, res) => {
+  try {
+    const enterpriseId = Number(req.params.id);
+    const teachingClassIds = req.body.teachingClassIds || req.body.teaching_class_ids;
+    const [u] = await pool.query(`SELECT id FROM users WHERE id = ? AND role = 'enterprise'`, [enterpriseId]);
+    if (!u.length) {
+      return res.status(404).json({ success: false, message: '企业用户不存在' });
+    }
+
+    await pool.query('DELETE FROM enterprise_teaching_class_access WHERE enterprise_user_id = ?', [enterpriseId]);
+
+    const ids = Array.isArray(teachingClassIds)
+      ? teachingClassIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    for (const tcId of ids) {
+      await pool.query(
+        'INSERT IGNORE INTO enterprise_teaching_class_access (enterprise_user_id, teaching_class_id) VALUES (?, ?)',
+        [enterpriseId, tcId]
+      );
+    }
+
+    res.json({ success: true, message: '已更新企业可访问教学班' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '保存失败', error: error.message });
+  }
+};
+
 const createTeacher = async (req, res) => {
   try {
-    const { username, password, realName, email, department } = req.body;
+    const username = req.body.username != null ? String(req.body.username).trim() : '';
+    const realName = req.body.realName != null ? String(req.body.realName).trim() : '';
+    const teacherNo = req.body.teacherNo != null ? String(req.body.teacherNo).trim() : '';
+    const email =
+      req.body.email != null && String(req.body.email).trim() !== ''
+        ? String(req.body.email).trim()
+        : null;
+    const department =
+      req.body.department != null && String(req.body.department).trim() !== ''
+        ? String(req.body.department).trim()
+        : null;
+    const phone =
+      req.body.phone != null && String(req.body.phone).trim() !== ''
+        ? String(req.body.phone).trim()
+        : null;
+
+    if (!username) {
+      return res.status(400).json({ success: false, message: '请填写用户名' });
+    }
+    if (!realName) {
+      return res.status(400).json({ success: false, message: '请填写真实姓名' });
+    }
+    if (!teacherNo) {
+      return res.status(400).json({ success: false, message: '请填写工号' });
+    }
+    if (!email) {
+      return res.status(400).json({ success: false, message: '请填写邮箱' });
+    }
+    if (!department) {
+      return res.status(400).json({ success: false, message: '请填写学院 / 部门' });
+    }
+
+    const fieldCheck = await validateAccountFields(
+      { username, realName, teacherNo, phone, email, department },
+      'teacher'
+    );
+    if (!fieldCheck.passed) {
+      return res.status(400).json({
+        success: false,
+        message: fieldCheck.errors.map((e) => e.message).join('；'),
+      });
+    }
 
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing.length > 0) {
       return res.status(400).json({ success: false, message: '用户名已存在' });
     }
 
-    const pv = validatePasswordPlaintext(password);
-    if (!pv.ok) {
-      return res.status(400).json({ success: false, message: pv.message, code: 'PASSWORD_POLICY' });
+    const [dupNo] = await pool.query(
+      'SELECT id FROM users WHERE teacher_no = ? AND teacher_no IS NOT NULL LIMIT 1',
+      [teacherNo]
+    );
+    if (dupNo.length) {
+      return res.status(400).json({ success: false, message: '工号已存在' });
     }
-    const hp = await hashPassword(password);
+
+    const [emailTaken] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+    if (emailTaken.length > 0) {
+      return res.status(400).json({ success: false, message: '该邮箱已被其他账号使用' });
+    }
+
+    const hp = await hashInitialTeacherPassword(teacherNo);
     if (!hp.ok) {
-      return res.status(400).json({ success: false, message: hp.message, code: 'PASSWORD_HASH' });
+      return res.status(400).json({ success: false, message: hp.message });
     }
 
     const [result] = await pool.query(
-      'INSERT INTO users (username, password, real_name, role, email, department) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, hp.hash, realName, 'teacher', email, department]
+      `INSERT INTO users
+        (username, password, password_plain, real_name, teacher_no, phone, role, email, department, must_change_password)
+       VALUES (?, ?, NULL, ?, ?, ?, 'teacher', ?, ?, 1)`,
+      [username, hp.hash, realName, teacherNo, phone, email, department]
     );
 
-    res.status(201).json({ success: true, message: '教师创建成功', userId: result.insertId });
+    res.status(201).json({ success: true, message: '教师创建成功，初始密码为工号', userId: result.insertId });
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      const msg = String(error.sqlMessage || '');
+      if (msg.includes('username')) {
+        return res.status(400).json({ success: false, message: '用户名已存在' });
+      }
+      if (msg.includes('teacher_no')) {
+        return res.status(400).json({ success: false, message: '工号已存在' });
+      }
+      if (msg.includes('email')) {
+        return res.status(400).json({ success: false, message: '该邮箱已被其他账号使用' });
+      }
+      return res.status(400).json({ success: false, message: '数据重复（用户名、工号或邮箱已存在）' });
+    }
+
+    console.error('[createTeacher]', error);
     res.status(500).json({ success: false, message: '创建失败', error: error.message });
+  }
+};
+
+const resetStudentInitialPassword = async (req, res) => {
+  try {
+    const targetId = toNumberOrNull(req.params.id);
+    if (targetId == null) {
+      return res.status(400).json({ success: false, message: '无效用户 ID' });
+    }
+    const [rows] = await pool.query(
+      'SELECT id, role, student_no FROM users WHERE id = ? LIMIT 1',
+      [targetId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    if (rows[0].role !== 'student') {
+      return res.status(400).json({ success: false, message: '仅可重置学生账号密码' });
+    }
+    if (!rows[0].student_no) {
+      return res.status(400).json({ success: false, message: '该学生无学号，无法重置为学号初始密码' });
+    }
+    const hp = await hashInitialStudentPassword(rows[0].student_no);
+    if (!hp.ok) {
+      return res.status(400).json({ success: false, message: hp.message });
+    }
+    await pool.query(
+      `UPDATE users SET password = ?, password_plain = NULL, must_change_password = 1, password_changed_at = NULL WHERE id = ?`,
+      [hp.hash, targetId]
+    );
+    try {
+      await cache.invalidateUserMe(targetId);
+    } catch {
+      /* ignore */
+    }
+    res.json({ success: true, message: '已重置为学号初始密码，学生首次登录需修改密码' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '重置失败', error: error.message });
+  }
+};
+
+const resetTeacherInitialPassword = async (req, res) => {
+  try {
+    const targetId = toNumberOrNull(req.params.id);
+    if (targetId == null) {
+      return res.status(400).json({ success: false, message: '无效用户 ID' });
+    }
+    const [rows] = await pool.query(
+      'SELECT id, role, teacher_no FROM users WHERE id = ? LIMIT 1',
+      [targetId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    if (rows[0].role !== 'teacher') {
+      return res.status(400).json({ success: false, message: '仅可重置教师账号密码' });
+    }
+    if (!rows[0].teacher_no) {
+      return res.status(400).json({ success: false, message: '该教师无工号，无法重置为工号初始密码' });
+    }
+    const hp = await hashInitialTeacherPassword(rows[0].teacher_no);
+    if (!hp.ok) {
+      return res.status(400).json({ success: false, message: hp.message });
+    }
+    await pool.query(
+      `UPDATE users SET password = ?, password_plain = NULL, must_change_password = 1, password_changed_at = NULL WHERE id = ?`,
+      [hp.hash, targetId]
+    );
+    try {
+      await cache.invalidateUserMe(targetId);
+    } catch {
+      /* ignore */
+    }
+    res.json({ success: true, message: '已重置为工号初始密码，教师首次登录需修改密码' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '重置失败', error: error.message });
+  }
+};
+
+const logout = async (req, res) => {
+  try {
+    const userId = toNumberOrNull(req.user?.id);
+    const sessionId = req.user?.sessionId;
+    if (userId == null) {
+      return res.status(401).json({ success: false, message: '未授权访问' });
+    }
+    await logoutUserSession(pool, userId, sessionId);
+    res.json({ success: true, message: '已退出登录' });
+  } catch (error) {
+    console.error('logout', error);
+    res.status(500).json({ success: false, message: '退出失败，请稍后重试' });
   }
 };
 
 module.exports = {
   register,
   login,
+  logout,
   getUserInfo,
   updateMyProfile,
+  updateMyCredentials,
   getMyArchive,
   uploadMyAvatar,
   searchStudentsForClass,
@@ -921,11 +1513,16 @@ module.exports = {
   createStudent,
   getAllUsers,
   getUserById,
+  getAdminUserPassword,
   updateUser,
   deleteUser,
+  resetStudentInitialPassword,
+  resetTeacherInitialPassword,
   createTeacher,
   createEnterpriseUser,
   listEnterpriseUsers,
   getEnterpriseUserClasses,
   setEnterpriseUserClasses,
+  getEnterpriseUserTeachingClasses,
+  setEnterpriseUserTeachingClasses,
 };

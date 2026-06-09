@@ -1,66 +1,159 @@
 <template>
-  <div class="page-qb page-qb-exams">
-    <header class="page-head exam-page-head">
-      <div>
-        <h1 class="page-title">在线考试</h1>
-        <p class="page-desc">配置时间窗、时长与防作弊；学生交卷后客观题自动判分，主观题可批改，并支持成绩公布与导出。</p>
+  <div class="exam-workbench">
+    <!-- 顶部标题区 -->
+    <header class="workbench-head">
+      <div class="workbench-head__main">
+        <h1 class="workbench-title">在线考试</h1>
+        <p class="workbench-subtitle">
+          配置考试时间、时长、防作弊规则与组卷策略，支持考试发布、监考、阅卷和成绩导出
+        </p>
+      </div>
+      <div class="workbench-head__actions">
+        <el-button type="primary" size="large" :disabled="!audienceId" @click="openCreate">
+          <el-icon><Plus /></el-icon>
+          新建考试
+        </el-button>
       </div>
     </header>
 
-    <el-card shadow="never" class="panel-card exam-panel">
-      <div class="exam-toolbar">
-        <div class="exam-toolbar-left">
-          <el-select
-            v-model="classId"
-            class="exam-class-select"
-            placeholder="选择授课班级"
-            filterable
-            clearable
-            @change="load"
-          >
-            <el-option v-for="c in classes" :key="c.id" :label="c.class_name" :value="c.id" />
-          </el-select>
-          <el-button type="primary" :disabled="!classId" :icon="Plus" @click="openCreate">新建考试</el-button>
+    <!-- 概览统计 -->
+    <section class="metric-grid">
+      <div v-for="card in metricCards" :key="card.key" class="metric-card">
+        <div class="metric-card__icon" :class="`metric-card__icon--${card.tone}`">
+          <el-icon><component :is="card.icon" /></el-icon>
+        </div>
+        <div class="metric-card__body">
+          <span class="metric-card__value">{{ card.value }}</span>
+          <span class="metric-card__label">{{ card.label }}</span>
+          <span v-if="card.hint" class="metric-card__hint">{{ card.hint }}</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 筛选 + 列表 -->
+    <div class="panel">
+      <div class="panel__header">
+        <div>
+          <h2 class="panel__title">考试列表</h2>
+          <span class="panel__meta">共 {{ displayedRows.length }} 场 · 当前班级筛选范围内</span>
         </div>
       </div>
 
-      <el-table v-loading="loading" :data="rows" class="exam-table" border stripe style="width: 100%; margin-top: 14px">
-        <el-table-column prop="title" label="考试名称" min-width="160" show-overflow-tooltip />
-        <el-table-column label="开始时间" width="178">
+      <div class="filter-bar">
+        <div class="filter-bar__scope">
+          <span class="filter-label">发布对象</span>
+          <el-radio-group v-model="audienceScope" class="audience-scope" @change="onAudienceScopeChange">
+            <el-radio-button value="legacy">行政班</el-radio-button>
+            <el-radio-button value="teaching">教学班</el-radio-button>
+          </el-radio-group>
+        </div>
+        <el-select
+          v-model="audienceId"
+          class="filter-select filter-select--class"
+          :placeholder="audienceScope === 'teaching' ? '选择教学班' : '选择行政班'"
+          filterable
+          clearable
+          @change="load"
+        >
+          <el-option v-for="o in audienceOptions" :key="o.id" :label="o.label" :value="o.id" />
+        </el-select>
+        <el-input v-model="keywordSearch" clearable placeholder="搜索考试名称" class="filter-input">
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+        <el-select v-model="filterStatus" clearable placeholder="考试状态" class="filter-select">
+          <el-option label="全部状态" value="" />
+          <el-option label="未开始" value="upcoming" />
+          <el-option label="进行中" value="active" />
+          <el-option label="已结束" value="ended" />
+          <el-option label="已发布" value="published" />
+          <el-option label="草稿" value="draft" />
+        </el-select>
+        <el-select v-model="sortBy" placeholder="排序" class="filter-select filter-select--sort">
+          <el-option label="开始时间 ↓" value="start_desc" />
+          <el-option label="开始时间 ↑" value="start_asc" />
+          <el-option label="创建顺序 ↓" value="id_desc" />
+          <el-option label="创建顺序 ↑" value="id_asc" />
+        </el-select>
+      </div>
+
+      <el-table
+        v-loading="loading"
+        :data="displayedRows"
+        class="exam-table"
+        border
+        stripe
+        empty-text="当前班级暂无考试，点击右上角「新建考试」开始配置"
+      >
+        <el-table-column prop="title" label="考试名称" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="exam-title-cell">{{ row.title }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="开始时间" width="172">
           <template #default="{ row }">{{ formatDateTime(row.start_at) }}</template>
         </el-table-column>
-        <el-table-column label="结束时间" width="178">
+        <el-table-column label="结束时间" width="172">
           <template #default="{ row }">{{ formatDateTime(row.end_at) }}</template>
         </el-table-column>
-        <el-table-column prop="duration_minutes" label="时长(分)" width="92" align="center" />
-        <el-table-column label="防切屏" width="88" align="center">
+        <el-table-column prop="duration_minutes" label="时长" width="80" align="center">
+          <template #default="{ row }">{{ row.duration_minutes }} 分</template>
+        </el-table-column>
+        <el-table-column label="防作弊" width="100" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.anti_tab_switch ? 'warning' : 'info'" effect="plain">
-              {{ row.anti_tab_switch ? '已开启' : '关闭' }}
+            <el-tag size="small" :class="row.anti_tab_switch ? 'tag-anti-on' : 'tag-anti-off'" effect="plain">
+              {{ row.anti_tab_switch ? '防切屏' : '未开启' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
+        <el-table-column label="状态" width="108" align="center">
           <template #default="{ row }">
-            <el-tag size="small" type="info" effect="plain">{{ qbPublishStatusLabel(row.status) }}</el-tag>
+            <el-tag size="small" :class="examPhaseTagClass(row)" effect="plain">
+              {{ examPhaseLabel(row) }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" min-width="520" align="right" fixed="right">
+        <el-table-column label="操作" width="220" align="right" fixed="right">
           <template #default="{ row }">
-            <div class="exam-row-actions">
-              <el-button type="primary" size="small" plain :icon="Edit" @click="openEdit(row)">编辑</el-button>
-              <el-button type="primary" size="small" plain :icon="Setting" @click="configure(row)">组卷</el-button>
-              <el-button type="primary" size="small" plain :icon="View" @click="openPaperPreview(row)">试卷</el-button>
-              <el-button type="warning" size="small" plain :icon="Monitor" @click="openExamMonitor(row)">监考</el-button>
-              <el-button type="primary" size="small" plain :icon="DataAnalysis" @click="viewAttempts(row)">成绩</el-button>
-              <el-button type="success" size="small" plain :icon="Download" @click="exportX(row)">导出</el-button>
-              <el-button type="danger" size="small" plain :icon="Delete" @click="remove(row)">删除</el-button>
+            <div class="table-actions">
+              <el-button type="primary" size="small" link @click="openEdit(row)">
+                <el-icon><Edit /></el-icon> 编辑
+              </el-button>
+              <el-button type="primary" size="small" link @click="configure(row)">
+                <el-icon><Setting /></el-icon> 组卷
+              </el-button>
+              <el-dropdown trigger="click" @command="(cmd) => handleRowMore(cmd, row)">
+                <el-button size="small" link type="info">
+                  更多 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="preview">
+                      <el-icon><View /></el-icon> 试卷预览
+                    </el-dropdown-item>
+                    <el-dropdown-item command="monitor">
+                      <el-icon><Monitor /></el-icon> 监考
+                    </el-dropdown-item>
+                    <el-dropdown-item command="scores">
+                      <el-icon><DataAnalysis /></el-icon> 成绩
+                    </el-dropdown-item>
+                    <el-dropdown-item command="export">
+                      <el-icon><Download /></el-icon> 导出成绩
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete" divided>
+                      <span class="text-danger"><el-icon><Delete /></el-icon> 删除</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </div>
 
+    <!-- 新建/编辑考试 -->
     <el-dialog v-model="dlg" :title="currentId ? '编辑考试' : '新建考试'" width="560px" destroy-on-close>
       <el-form label-width="120px">
         <el-form-item label="名称"><el-input v-model="form.title" /></el-form-item>
@@ -93,78 +186,189 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="qDlg" class="qb-config-dialog" title="试卷题目配置" width="1000px" destroy-on-close align-center>
-      <div class="qb-config-hero">
-        <p class="qb-config-lead">
-          从题库编排本场试卷题目顺序即右侧列表自上而下的出题顺序。题库中的<strong>题库ID</strong>为全局主键，不等于表格「序号」。
-        </p>
-      </div>
-      <div class="qb-transfer-toolbar">
-        <el-select v-model="transferFilterType" clearable placeholder="题型筛选" style="width: 140px">
-          <el-option label="全部题型" value="" />
-          <el-option v-for="t in transferTypeOpts" :key="t.v" :label="t.l" :value="t.v" />
-        </el-select>
-        <span class="qb-transfer-stat muted">题库 {{ allQuestions.length }} 题 · 已选 {{ pickedQ.length }} 题</span>
-        <el-button size="small" type="primary" plain :icon="View" :disabled="!currentId" @click="openPaperPreviewByCurrent">预览本场试卷</el-button>
-      </div>
-      <el-transfer
-        v-model="pickedQ"
-        class="qb-transfer pro-transfer exam-transfer"
-        filterable
-        :filter-method="transferFilterMethod"
-        filter-placeholder="搜索题干、题库ID 或题型…"
-        :titles="['题库候选', '本场试卷已选']"
-        :button-texts="['移除', '加入']"
-        :data="transferData"
-        :props="{ key: 'key', label: 'label' }"
-      >
-        <template #default="{ option }">
-          <div class="qb-transfer-item">
-            <div class="qb-transfer-stem" :title="String(option.stem)">{{ clipStem(option.stem) }}</div>
-            <div class="qb-transfer-meta">
-              <el-tag size="small" type="primary" effect="plain">{{ qbTypeLabel(option.type) }}</el-tag>
-              <el-tag size="small" :type="qbDifficultyTagType(option.difficulty)" effect="light">{{ qbDifficultyLabel(option.difficulty) }}</el-tag>
-              <span class="qb-transfer-id">题库ID {{ option.key }}</span>
-              <span v-if="option.score != null && option.score !== ''" class="qb-transfer-score">{{ option.score }} 分</span>
+    <!-- 试卷配置工作台 -->
+    <el-dialog
+      v-model="qDlg"
+      class="paper-config-dlg"
+      width="1180px"
+      destroy-on-close
+      align-center
+      :show-close="true"
+    >
+      <template #header>
+        <div class="paper-dlg-head">
+          <div>
+            <h3 class="paper-dlg-title">试卷题目配置</h3>
+            <p class="paper-dlg-desc">
+              从题库中编辑本场试卷题目与顺序，右侧列表自上而下为实际出题顺序
+            </p>
+          </div>
+          <div class="paper-dlg-stats">
+            <span class="stat-chip">题库 <strong>{{ allQuestions.length }}</strong> 题</span>
+            <span class="stat-chip stat-chip--primary">已选 <strong>{{ pickedQ.length }}</strong> 题</span>
+            <span class="stat-chip">总分 <strong>{{ pickedTotalScore }}</strong> 分</span>
+            <el-button size="small" type="primary" plain :icon="View" :disabled="!currentId" @click="openPaperPreviewByCurrent">
+              预览试卷
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-tabs v-model="composeTab" class="compose-tabs">
+        <el-tab-pane label="手动组卷" name="manual">
+          <div class="paper-three-col">
+            <!-- 左：候选题库 -->
+            <div class="paper-col paper-col--pool">
+              <div class="col-head">
+                <span class="col-title">题库候选</span>
+                <span class="col-meta">{{ candidateQuestions.length }} 题可选</span>
+              </div>
+              <div class="col-filters">
+                <el-select v-model="transferFilterType" clearable placeholder="题型" size="small">
+                  <el-option label="全部题型" value="" />
+                  <el-option v-for="t in transferTypeOpts" :key="t.v" :label="t.l" :value="t.v" />
+                </el-select>
+                <el-select v-model="candidateDifficulty" clearable placeholder="难度" size="small">
+                  <el-option label="易" value="easy" />
+                  <el-option label="中" value="medium" />
+                  <el-option label="难" value="hard" />
+                </el-select>
+                <el-input v-model="candidateTag" clearable placeholder="标签关键词" size="small" />
+                <el-input v-model="candidateSearch" clearable placeholder="搜索题干 / ID" size="small">
+                  <template #prefix><el-icon><Search /></el-icon></template>
+                </el-input>
+              </div>
+              <div class="question-scroll">
+                <div v-if="!candidateQuestions.length" class="col-empty">暂无候选题目，请调整筛选或先录入题库</div>
+                <div v-for="q in candidateQuestions" :key="q.key" class="q-card q-card--pool">
+                  <div class="q-card-stem" :title="String(q.stem)">{{ clipStemTwoLine(q.stem) }}</div>
+                  <div class="q-card-meta">
+                    <el-tag size="small" type="primary" effect="plain">{{ qbTypeLabel(q.type) }}</el-tag>
+                    <el-tag size="small" :type="qbDifficultyTagType(q.difficulty)" effect="light">
+                      {{ qbDifficultyLabel(q.difficulty) }}
+                    </el-tag>
+                    <span class="q-id">ID {{ q.key }}</span>
+                    <span class="q-score">{{ q.score ?? '—' }} 分</span>
+                  </div>
+                  <el-button size="small" type="primary" plain class="q-add-btn" @click="addToPaper(q.key)">
+                    加入
+                  </el-button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 中：操作区 -->
+            <div class="paper-col paper-col--actions">
+              <div class="action-stack">
+                <el-button type="primary" :disabled="!candidateQuestions.length" @click="addAllVisible">
+                  加入 &gt;
+                </el-button>
+                <el-button :disabled="!pickedQ.length" @click="removeAllPicked">&lt; 移除</el-button>
+                <el-divider />
+                <el-button :disabled="!canMoveUp" @click="movePickedUp(selectedPickedIdx)">上移</el-button>
+                <el-button :disabled="!canMoveDown" @click="movePickedDown(selectedPickedIdx)">下移</el-button>
+                <el-divider />
+                <el-button type="danger" plain :disabled="!pickedQ.length" @click="clearPicked">清空已选</el-button>
+              </div>
+              <p class="action-hint">点击右侧题目可选中后调整顺序</p>
+            </div>
+
+            <!-- 右：已选结构 -->
+            <div class="paper-col paper-col--picked">
+              <div class="picked-overview">
+                <div class="overview-row">
+                  <span>已选 <strong>{{ pickedQ.length }}</strong> 题</span>
+                  <span>总分 <strong>{{ pickedTotalScore }}</strong></span>
+                </div>
+                <div v-if="pickedTypeStats.length" class="type-chips">
+                  <span v-for="t in pickedTypeStats" :key="t.v" class="type-chip">
+                    {{ t.l }} {{ t.count }}
+                  </span>
+                </div>
+                <div v-else class="type-chips muted">尚未选题</div>
+              </div>
+              <div class="col-head">
+                <span class="col-title">本场试卷结构</span>
+              </div>
+              <div class="question-scroll">
+                <div v-if="!pickedQuestionsDetailed.length" class="col-empty">
+                  从左侧加入题目，或使用「随机组卷」标签页快速填充
+                </div>
+                <div
+                  v-for="(q, idx) in pickedQuestionsDetailed"
+                  :key="q.key"
+                  class="q-card q-card--picked"
+                  :class="{ 'q-card--selected': selectedPickedIdx === idx }"
+                  @click="selectedPickedIdx = idx"
+                >
+                  <div class="q-picked-head">
+                    <span class="q-index">{{ idx + 1 }}</span>
+                    <el-tag size="small" type="primary" effect="plain">{{ qbTypeLabel(q.type) }}</el-tag>
+                    <span class="q-score">{{ q.score ?? '—' }} 分</span>
+                  </div>
+                  <div class="q-card-stem" :title="String(q.stem)">{{ clipStemTwoLine(q.stem) }}</div>
+                  <div class="q-picked-actions">
+                    <el-button link size="small" :disabled="idx === 0" @click.stop="movePickedUp(idx)">上移</el-button>
+                    <el-button link size="small" :disabled="idx === pickedQ.length - 1" @click.stop="movePickedDown(idx)">下移</el-button>
+                    <el-button link size="small" type="danger" @click.stop="removeFromPaper(q.key)">删除</el-button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-        </template>
-        <template #left-empty>
-          <div class="transfer-empty">暂无候选题目，请先录入题库或调整题型筛选</div>
-        </template>
-        <template #right-empty>
-          <div class="transfer-empty">尚未选题；也可用下方「随机组卷」快速填充后再微调</div>
-        </template>
-      </el-transfer>
-      <el-divider content-position="left">随机组卷</el-divider>
-      <p class="hint">
-        按题型分别设定抽题数量（各题型 0～100）；可限制难度与标签。若各题型数量均为 0，「跳过预览直接随机写入」将按默认从全题型随机抽 10 题。预览满意后再写入；写入将<strong>覆盖</strong>右侧已选列表（仍可在穿梭框微调后点保存）。
-      </p>
-      <div class="rand-counts-grid">
-        <div v-for="t in transferTypeOpts" :key="t.v" class="rand-count-cell">
-          <span class="rand-count-label">{{ t.l }}</span>
-          <el-input-number v-model="randomCounts[t.v]" :min="0" :max="100" size="small" controls-position="right" />
-        </div>
-      </div>
-      <div class="rand-row rand-row-second">
-        <span class="rand-label">难度</span>
-        <el-select v-model="randomDifficulty" clearable placeholder="不限" style="width: 120px">
-          <el-option label="易" value="easy" />
-          <el-option label="中" value="medium" />
-          <el-option label="难" value="hard" />
-        </el-select>
-        <el-input v-model="randomTag" placeholder="知识点 / 课程标签关键词" clearable style="width: 260px" />
-      </div>
-      <div class="rand-actions">
-        <el-button :disabled="!currentId" :loading="randomPreviewLoading" @click="doRandomPreview">预览抽题结果</el-button>
-        <el-button type="warning" plain :disabled="!currentId" :loading="randomPickLoading" @click="doRandomPickDirect">跳过预览直接随机写入</el-button>
-      </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="随机组卷" name="random">
+          <div class="random-panel">
+            <p class="random-lead">
+              按题型设定抽题数量（各 0～100），可限制难度与知识点标签。预览满意后写入试卷；直接随机写入将覆盖当前已选题目。
+            </p>
+            <div class="rand-counts-grid">
+              <div v-for="t in transferTypeOpts" :key="t.v" class="rand-count-cell">
+                <span class="rand-count-label">{{ t.l }}</span>
+                <el-input-number v-model="randomCounts[t.v]" :min="0" :max="100" size="small" controls-position="right" />
+              </div>
+            </div>
+            <div class="rand-row">
+              <span class="rand-label">难度限制</span>
+              <el-select v-model="randomDifficulty" clearable placeholder="不限" style="width: 120px">
+                <el-option label="易" value="easy" />
+                <el-option label="中" value="medium" />
+                <el-option label="难" value="hard" />
+              </el-select>
+              <span class="rand-label">标签 / 知识点</span>
+              <el-input v-model="randomTag" placeholder="关键词" clearable style="width: 280px" />
+            </div>
+            <div class="rand-actions">
+              <el-button :disabled="!currentId" :loading="randomPreviewLoading" type="primary" plain @click="doRandomPreview">
+                预览抽题结果
+              </el-button>
+              <el-button :disabled="!currentId" :loading="randomPickLoading" type="warning" plain @click="doRandomPickDirect">
+                跳过预览直接随机写入
+              </el-button>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+
       <template #footer>
-        <el-button @click="qDlg = false">取消</el-button>
-        <el-button type="primary" @click="saveQuestions">保存</el-button>
+        <div class="paper-dlg-footer">
+          <div class="footer-summary">
+            <template v-if="pickedQ.length">
+              当前试卷：<strong>{{ pickedQ.length }}</strong> 题 · 总分 <strong>{{ pickedTotalScore }}</strong> 分
+            </template>
+            <span v-else class="footer-warn">尚未配置题目，保存后学生将无法开始考试</span>
+          </div>
+          <div class="footer-btns">
+            <el-button @click="qDlg = false">取消</el-button>
+            <el-button type="primary" @click="saveQuestions">保存</el-button>
+            <el-button type="primary" plain :disabled="!pickedQ.length" @click="saveQuestionsAndPreview">保存并预览</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
+    <!-- 成绩 / 批改 -->
     <el-dialog v-model="aDlg" title="考试作答 / 批改" width="960px" destroy-on-close align-center>
       <el-alert
         v-if="!gradingSubjective.length"
@@ -209,13 +413,7 @@
         </el-table-column>
         <el-table-column label="操作" width="200" align="right" fixed="right">
           <template #default="{ row }">
-            <el-button
-              v-if="gradingSubjective.length"
-              link
-              type="primary"
-              size="small"
-              @click="openGradeExam(row)"
-            >
+            <el-button v-if="gradingSubjective.length" link type="primary" size="small" @click="openGradeExam(row)">
               批改主观题
             </el-button>
             <el-button
@@ -303,7 +501,7 @@
 
     <el-dialog v-model="randomPreviewDlg" title="随机抽题预览" width="920px" destroy-on-close align-center>
       <p class="hint preview-hint">
-        以下为按当前规则随机抽中的题目（每次预览结果可能不同）。确认后「写入试卷」将覆盖右侧已选；关闭可返回继续调整数量或筛选条件。
+        以下为按当前规则随机抽中的题目（每次预览结果可能不同）。确认后「写入试卷」将覆盖已选题目。
       </p>
       <el-table v-if="randomPreviewRows.length" :data="randomPreviewRows" size="small" border stripe max-height="440">
         <el-table-column type="index" label="#" width="52" align="center" />
@@ -327,12 +525,7 @@
       <el-empty v-else description="当前条件下没有抽到题目，请增加数量或放宽难度/标签" />
       <template #footer>
         <el-button @click="randomPreviewDlg = false">关闭</el-button>
-        <el-button
-          type="primary"
-          :loading="randomApplyLoading"
-          :disabled="!lastPreviewQuestionIds.length"
-          @click="applyRandomPreview"
-        >
+        <el-button type="primary" :loading="randomApplyLoading" :disabled="!lastPreviewQuestionIds.length" @click="applyRandomPreview">
           写入试卷
         </el-button>
       </template>
@@ -343,8 +536,25 @@
 <script setup>
 import { ref, onMounted, computed, reactive } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Edit, Setting, View, DataAnalysis, Download, Delete, Plus, Monitor } from '@element-plus/icons-vue'
+import {
+  Edit,
+  Setting,
+  View,
+  DataAnalysis,
+  Download,
+  Delete,
+  Plus,
+  Monitor,
+  Search,
+  ArrowDown,
+  Document,
+  CircleCheck,
+  Timer,
+  Finished,
+  EditPen,
+} from '@element-plus/icons-vue'
 import { getMyTeachingOverview } from '../../api/class'
+import { listMyTeachingClasses } from '../../api/teachingClass'
 import {
   listTeacherExams,
   createExam,
@@ -366,7 +576,6 @@ import {
   qbTypeLabel,
   qbAttemptStatusLabel,
   qbAttemptStatusTagType,
-  qbPublishStatusLabel,
   parseJsonLoose,
 } from '../../utils/qbLabels'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -375,8 +584,141 @@ import { useRtOnDomains } from '../../composables/useRtOnDomains'
 
 const router = useRouter()
 const route = useRoute()
-const classes = ref([])
-const classId = ref(null)
+
+const legacyClasses = ref([])
+const teachingClasses = ref([])
+const audienceScope = ref('legacy')
+const audienceId = ref(null)
+const keywordSearch = ref('')
+const filterStatus = ref('')
+const sortBy = ref('start_desc')
+const pendingGradeByExamId = reactive({})
+
+const audienceOptions = computed(() => {
+  if (audienceScope.value === 'teaching') {
+    return teachingClasses.value.map((tc) => ({
+      id: tc.id,
+      label: [tc.class_name, tc.course_name].filter(Boolean).join(' · '),
+    }))
+  }
+  return legacyClasses.value.map((c) => ({
+    id: c.id,
+    label: c.class_name,
+  }))
+})
+
+function audienceListParams() {
+  if (audienceScope.value === 'teaching') {
+    return { teachingClassId: audienceId.value }
+  }
+  return { classId: audienceId.value }
+}
+
+function audienceCreatePayload() {
+  if (audienceScope.value === 'teaching') {
+    return { teachingClassId: audienceId.value }
+  }
+  return { classId: audienceId.value }
+}
+
+function onAudienceScopeChange() {
+  const opts = audienceOptions.value
+  audienceId.value = opts.length ? opts[0].id : null
+  load()
+}
+
+function examTimePhase(row) {
+  if (row.status !== 'published') return 'draft'
+  const now = Date.now()
+  const start = new Date(row.start_at).getTime()
+  const end = new Date(row.end_at).getTime()
+  if (Number.isNaN(start) || Number.isNaN(end)) return 'published'
+  if (now < start) return 'upcoming'
+  if (now > end) return 'ended'
+  return 'active'
+}
+
+function examPhaseLabel(row) {
+  const phase = examTimePhase(row)
+  const map = {
+    upcoming: '未开始',
+    active: '进行中',
+    ended: '已结束',
+    draft: '草稿',
+    published: '已发布',
+  }
+  return map[phase] || '已发布'
+}
+
+function examPhaseTagClass(row) {
+  const phase = examTimePhase(row)
+  return {
+    'tag-phase-upcoming': phase === 'upcoming',
+    'tag-phase-active': phase === 'active',
+    'tag-phase-ended': phase === 'ended' || phase === 'published',
+    'tag-phase-draft': phase === 'draft',
+  }
+}
+
+const metricCards = computed(() => {
+  const list = rows.value
+  const published = list.filter((r) => r.status === 'published').length
+  const active = list.filter((r) => examTimePhase(r) === 'active').length
+  const ended = list.filter((r) => examTimePhase(r) === 'ended').length
+  const pending = Object.values(pendingGradeByExamId).reduce((s, n) => s + (Number(n) || 0), 0)
+  return [
+    { key: 'total', label: '考试总数', value: list.length, icon: Document, tone: 'blue', hint: '当前班级' },
+    { key: 'published', label: '已发布', value: published, icon: CircleCheck, tone: 'slate', hint: '' },
+    { key: 'active', label: '进行中', value: active, icon: Timer, tone: 'green', hint: '' },
+    { key: 'ended', label: '已结束', value: ended, icon: Finished, tone: 'gray', hint: '' },
+    {
+      key: 'pending',
+      label: '待批改',
+      value: pending,
+      icon: EditPen,
+      tone: 'orange',
+      hint: pending ? '待阅答卷' : '打开成绩页后统计',
+    },
+  ]
+})
+
+const displayedRows = computed(() => {
+  let list = [...rows.value]
+  const kw = keywordSearch.value.trim().toLowerCase()
+  if (kw) {
+    list = list.filter((r) => String(r.title || '').toLowerCase().includes(kw))
+  }
+  if (filterStatus.value) {
+    if (filterStatus.value === 'draft') {
+      list = list.filter((r) => r.status !== 'published')
+    } else if (filterStatus.value === 'published') {
+      list = list.filter((r) => r.status === 'published')
+    } else {
+      list = list.filter((r) => examTimePhase(r) === filterStatus.value)
+    }
+  }
+  const sort = sortBy.value
+  list.sort((a, b) => {
+    if (sort === 'start_asc' || sort === 'start_desc') {
+      const ta = new Date(a.start_at).getTime() || 0
+      const tb = new Date(b.start_at).getTime() || 0
+      return sort === 'start_asc' ? ta - tb : tb - ta
+    }
+    const ia = Number(a.id) || 0
+    const ib = Number(b.id) || 0
+    return sort === 'id_asc' ? ia - ib : ib - ia
+  })
+  return list
+})
+
+function handleRowMore(cmd, row) {
+  if (cmd === 'preview') openPaperPreview(row)
+  else if (cmd === 'monitor') openExamMonitor(row)
+  else if (cmd === 'scores') viewAttempts(row)
+  else if (cmd === 'export') exportX(row)
+  else if (cmd === 'delete') remove(row)
+}
+
 const rows = ref([])
 const loading = ref(false)
 const dlg = ref(false)
@@ -391,6 +733,11 @@ const gScores = reactive({})
 const gradeSaving = ref(false)
 const allQuestions = ref([])
 const pickedQ = ref([])
+const composeTab = ref('manual')
+const candidateSearch = ref('')
+const candidateDifficulty = ref('')
+const candidateTag = ref('')
+const selectedPickedIdx = ref(0)
 const transferFilterType = ref('')
 const transferTypeOpts = [
   { v: 'single', l: '单选题' },
@@ -401,30 +748,13 @@ const transferTypeOpts = [
   { v: 'code', l: '编程题' },
 ]
 
-const openExamMonitor = (row) => {
-  if (!classId.value) {
-    ElMessage.warning('请先选择班级')
-    return
+const questionById = computed(() => {
+  const m = new Map()
+  for (const q of allQuestions.value) {
+    m.set(String(q.id), q)
   }
-  router.push(`/teacher/qbank/exams/${row.id}/monitor?classId=${classId.value}`)
-}
-
-function clipStem(s) {
-  const t = String(s || '').replace(/\s+/g, ' ').trim()
-  if (t.length <= 72) return t || '（无题干）'
-  return `${t.slice(0, 72)}…`
-}
-
-function transferFilterMethod(query, item) {
-  if (transferFilterType.value && item.type !== transferFilterType.value) return false
-  const q = String(query || '').trim().toLowerCase()
-  if (!q) return true
-  return (
-    String(item.stem || '').toLowerCase().includes(q) ||
-    String(item.key || '').includes(q) ||
-    qbTypeLabel(item.type).toLowerCase().includes(q)
-  )
-}
+  return m
+})
 
 const transferData = computed(() =>
   allQuestions.value.map((q) => ({
@@ -434,8 +764,127 @@ const transferData = computed(() =>
     type: q.type,
     difficulty: q.difficulty,
     score: q.default_score,
+    knowledge_tag: q.knowledge_tag,
+    tags: q.tags,
   }))
 )
+
+const pickedSet = computed(() => new Set(pickedQ.value))
+
+const candidateQuestions = computed(() =>
+  transferData.value.filter((q) => {
+    if (pickedSet.value.has(q.key)) return false
+    if (transferFilterType.value && q.type !== transferFilterType.value) return false
+    if (candidateDifficulty.value && q.difficulty !== candidateDifficulty.value) return false
+    if (candidateTag.value) {
+      const tag = candidateTag.value.trim().toLowerCase()
+      const raw = questionById.value.get(q.key)
+      const hay = [q.knowledge_tag, raw?.knowledge_tag, raw?.tags, q.tags]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      if (!hay.includes(tag)) return false
+    }
+    if (candidateSearch.value) {
+      const s = candidateSearch.value.trim().toLowerCase()
+      if (!String(q.stem || '').toLowerCase().includes(s) && !String(q.key).includes(s)) return false
+    }
+    return true
+  })
+)
+
+const pickedQuestionsDetailed = computed(() =>
+  pickedQ.value.map((key) => transferData.value.find((q) => q.key === key)).filter(Boolean)
+)
+
+const pickedTotalScore = computed(() =>
+  pickedQuestionsDetailed.value.reduce((sum, q) => sum + (Number(q.score) || 0), 0)
+)
+
+const pickedTypeStats = computed(() => {
+  const counts = {}
+  for (const q of pickedQuestionsDetailed.value) {
+    counts[q.type] = (counts[q.type] || 0) + 1
+  }
+  return transferTypeOpts.filter((t) => counts[t.v]).map((t) => ({ ...t, count: counts[t.v] }))
+})
+
+const canMoveUp = computed(() => selectedPickedIdx.value > 0 && pickedQ.value.length > 0)
+const canMoveDown = computed(
+  () => selectedPickedIdx.value >= 0 && selectedPickedIdx.value < pickedQ.value.length - 1
+)
+
+function addToPaper(key) {
+  if (!pickedSet.value.has(key)) pickedQ.value.push(key)
+}
+
+function removeFromPaper(key) {
+  pickedQ.value = pickedQ.value.filter((k) => k !== key)
+  if (selectedPickedIdx.value >= pickedQ.value.length) {
+    selectedPickedIdx.value = Math.max(0, pickedQ.value.length - 1)
+  }
+}
+
+function movePickedUp(idx) {
+  const i = idx ?? selectedPickedIdx.value
+  if (i <= 0) return
+  const arr = [...pickedQ.value]
+  ;[arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]
+  pickedQ.value = arr
+  selectedPickedIdx.value = i - 1
+}
+
+function movePickedDown(idx) {
+  const i = idx ?? selectedPickedIdx.value
+  if (i >= pickedQ.value.length - 1) return
+  const arr = [...pickedQ.value]
+  ;[arr[i], arr[i + 1]] = [arr[i + 1], arr[i]]
+  pickedQ.value = arr
+  selectedPickedIdx.value = i + 1
+}
+
+function addAllVisible() {
+  for (const q of candidateQuestions.value) addToPaper(q.key)
+}
+
+async function clearPicked() {
+  if (!pickedQ.value.length) return
+  try {
+    await ElMessageBox.confirm('确定清空本场已选全部题目？', '清空已选', { type: 'warning' })
+    pickedQ.value = []
+    selectedPickedIdx.value = 0
+  } catch {
+    /* cancel */
+  }
+}
+
+async function removeAllPicked() {
+  await clearPicked()
+}
+
+const openExamMonitor = (row) => {
+  if (!audienceId.value) {
+    ElMessage.warning('请先选择班级')
+    return
+  }
+  const query =
+    audienceScope.value === 'teaching'
+      ? { teachingClassId: audienceId.value }
+      : { classId: audienceId.value }
+  router.push({ path: `/teacher/qbank/exams/${row.id}/monitor`, query })
+}
+
+function clipStem(s) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  if (t.length <= 72) return t || '（无题干）'
+  return `${t.slice(0, 72)}…`
+}
+
+function clipStemTwoLine(s) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  if (t.length <= 96) return t || '（无题干）'
+  return `${t.slice(0, 96)}…`
+}
 
 const form = ref({
   title: '',
@@ -505,18 +954,20 @@ function aiHintForEq(attempt, eqId) {
 }
 
 const loadClasses = async () => {
-  const res = await getMyTeachingOverview()
-  if (res.success) {
-    classes.value = res.data || []
-    if (!classId.value && classes.value.length) classId.value = classes.value[0].id
+  const [legacyRes, tcRes] = await Promise.all([getMyTeachingOverview(), listMyTeachingClasses()])
+  if (legacyRes.success) legacyClasses.value = legacyRes.data || []
+  if (tcRes.success) teachingClasses.value = tcRes.data || []
+  if (!audienceId.value) {
+    const opts = audienceOptions.value
+    if (opts.length) audienceId.value = opts[0].id
   }
 }
 
 const load = async () => {
-  if (!classId.value) return
+  if (!audienceId.value) return
   loading.value = true
   try {
-    const res = await listTeacherExams({ classId: classId.value })
+    const res = await listTeacherExams(audienceListParams())
     if (res.success) rows.value = res.data || []
   } finally {
     loading.value = false
@@ -562,9 +1013,9 @@ const openEdit = (row) => {
 }
 
 const saveExam = async () => {
-  if (!classId.value) return
+  if (!audienceId.value) return
   const payload = {
-    classId: classId.value,
+    ...audienceCreatePayload(),
     ...form.value,
     status: 'published',
     publish_scores_at: form.value.publish_scores_at || null,
@@ -632,6 +1083,11 @@ const openPaperPreviewByCurrent = async () => {
 
 const configure = async (row) => {
   currentId.value = row.id
+  composeTab.value = 'manual'
+  candidateSearch.value = ''
+  candidateDifficulty.value = ''
+  candidateTag.value = ''
+  selectedPickedIdx.value = 0
   transferTypeOpts.forEach((t) => {
     randomCounts[t.v] = 0
   })
@@ -678,6 +1134,7 @@ const applyRandomPreview = async () => {
     await randomPickExamQuestions(currentId.value, { question_ids: lastPreviewQuestionIds.value })
     ElMessage.success('已按预览写入试卷')
     randomPreviewDlg.value = false
+    composeTab.value = 'manual'
     const det = await getExamTeacher(currentId.value)
     if (det.success) {
       pickedQ.value = (det.data.questions || []).map((q) => String(q.question_id))
@@ -704,6 +1161,7 @@ const doRandomPickDirect = async () => {
   try {
     await randomPickExamQuestions(currentId.value, { rules: buildRandomRules() })
     ElMessage.success('已随机组卷')
+    composeTab.value = 'manual'
     const det = await getExamTeacher(currentId.value)
     if (det.success) {
       pickedQ.value = (det.data.questions || []).map((q) => String(q.question_id))
@@ -726,12 +1184,25 @@ const saveQuestions = async () => {
   }
 }
 
+const saveQuestionsAndPreview = async () => {
+  const items = pickedQ.value.map((id) => ({ questionId: Number(id), score: null }))
+  try {
+    await setExamQuestions(currentId.value, items)
+    ElMessage.success('已保存')
+    qDlg.value = false
+    await openPaperPreviewByCurrent()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || '失败')
+  }
+}
+
 const viewAttempts = async (row) => {
   currentId.value = row.id
   try {
     const [res, det] = await Promise.all([listExamAttempts(row.id), getExamTeacher(row.id)])
     if (!res.success) return
     attempts.value = res.data || []
+    pendingGradeByExamId[row.id] = (res.data || []).filter((a) => a.status === 'submitted').length
     const qs = det.success ? det.data?.questions || [] : []
     gradingSubjective.value = qs
       .filter((q) => q.type === 'short' || q.type === 'code')
@@ -841,7 +1312,14 @@ const remove = async (row) => {
 onMounted(async () => {
   await loadClasses()
   const qc = Number(route.query.classId)
-  if (Number.isFinite(qc) && qc > 0) classId.value = qc
+  const qtc = Number(route.query.teachingClassId)
+  if (Number.isFinite(qtc) && qtc > 0) {
+    audienceScope.value = 'teaching'
+    if (teachingClasses.value.some((t) => Number(t.id) === qtc)) audienceId.value = qtc
+  } else if (Number.isFinite(qc) && qc > 0) {
+    audienceScope.value = 'legacy'
+    if (legacyClasses.value.some((c) => Number(c.id) === qc)) audienceId.value = qc
+  }
   await load()
 })
 
@@ -851,167 +1329,234 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
 </script>
 
 <style scoped>
-.page-qb {
-  max-width: 1400px;
+.exam-workbench {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding-bottom: 32px;
 }
-.page-head {
+
+.workbench-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.workbench-title {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+.workbench-subtitle {
+  margin: 0;
+  max-width: 640px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #64748b;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+@media (max-width: 1100px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.metric-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.metric-card__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.metric-card__icon--blue {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.metric-card__icon--slate {
+  background: #f1f5f9;
+  color: #475569;
+}
+.metric-card__icon--green {
+  background: #ecfdf5;
+  color: #059669;
+}
+.metric-card__icon--gray {
+  background: #f8fafc;
+  color: #64748b;
+}
+.metric-card__icon--orange {
+  background: #fff7ed;
+  color: #ea580c;
+}
+.metric-card__value {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+.metric-card__label {
+  display: block;
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 2px;
+}
+.metric-card__hint {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  padding: 18px 20px 20px;
+}
+.panel__header {
+  margin-bottom: 14px;
+}
+.panel__title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.panel__meta {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
   margin-bottom: 16px;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
 }
-.page-title {
-  margin: 0 0 6px;
-  font-size: 22px;
+.filter-bar__scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-label {
+  font-size: 13px;
+  color: #64748b;
+  white-space: nowrap;
+}
+.audience-scope :deep(.el-radio-button__inner) {
+  padding: 8px 16px;
+}
+.filter-input {
+  width: 200px;
+}
+.filter-select {
+  width: 130px;
+}
+.filter-select--class {
+  width: 240px;
+}
+.filter-select--sort {
+  width: 148px;
+}
+
+.exam-table :deep(.el-table__header th) {
+  background: #f8fafc !important;
+  color: #475569;
   font-weight: 600;
 }
-.page-desc {
-  margin: 0;
-  font-size: 14px;
-  color: var(--sg-text-secondary);
+.exam-table :deep(.el-table__cell) {
+  vertical-align: middle;
 }
-.panel-card {
-  border-radius: var(--sg-radius-lg);
-  border: 1px solid var(--sg-border);
+.exam-title-cell {
+  font-weight: 500;
+  color: #0f172a;
 }
-.toolbar-row {
+.table-actions {
   display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: nowrap;
 }
+.text-danger {
+  color: var(--el-color-danger);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag-anti-on {
+  --el-tag-bg-color: #fff7ed;
+  --el-tag-border-color: #fed7aa;
+  --el-tag-text-color: #c2410c;
+}
+.tag-anti-off {
+  --el-tag-bg-color: #f8fafc;
+  --el-tag-border-color: #e2e8f0;
+  --el-tag-text-color: #94a3b8;
+}
+.tag-phase-upcoming {
+  --el-tag-bg-color: #eff6ff;
+  --el-tag-border-color: #bfdbfe;
+  --el-tag-text-color: #1d4ed8;
+}
+.tag-phase-active {
+  --el-tag-bg-color: #ecfdf5;
+  --el-tag-border-color: #a7f3d0;
+  --el-tag-text-color: #047857;
+}
+.tag-phase-ended {
+  --el-tag-bg-color: #f1f5f9;
+  --el-tag-border-color: #e2e8f0;
+  --el-tag-text-color: #64748b;
+}
+.tag-phase-draft {
+  --el-tag-bg-color: #f8fafc;
+  --el-tag-border-color: #cbd5e1;
+  --el-tag-text-color: #475569;
+}
+
 .tip {
   margin-left: 8px;
   font-size: 12px;
-  color: var(--sg-text-secondary);
-}
-.mt6 {
-  margin-top: 6px;
-}
-.row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.hint {
-  font-size: 13px;
-  color: var(--sg-text-secondary);
-  margin: 0 0 12px;
-}
-.rand-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.rand-types {
-  margin-bottom: 12px;
-}
-.rand-label {
-  font-size: 13px;
-  color: var(--sg-text-secondary);
-  margin-right: 4px;
+  color: #64748b;
 }
 .muted {
-  color: var(--sg-text-secondary);
+  color: #64748b;
   font-size: 12px;
-}
-.ai-pre {
-  margin: 0;
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 400px;
-  overflow: auto;
-}
-.qb-config-dialog :deep(.el-dialog__body) {
-  padding-top: 12px;
-}
-.qb-config-hero {
-  margin-bottom: 14px;
-}
-.qb-config-lead {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.65;
-  color: var(--sg-text-secondary);
-}
-.qb-transfer-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.qb-transfer-stat {
-  font-size: 13px;
-}
-.exam-transfer {
-  --transfer-panel-w: 380px;
-  --el-transfer-item-height: auto;
-}
-.exam-transfer :deep(.el-transfer-panel) {
-  width: var(--transfer-panel-w);
-}
-.exam-transfer :deep(.el-transfer-panel__body) {
-  height: 400px;
-}
-.exam-transfer :deep(.el-transfer__buttons) {
-  padding: 0 12px;
-}
-.exam-transfer :deep(.el-transfer-panel__item.el-checkbox) {
-  height: auto !important;
-  min-height: 48px;
-  margin-right: 0;
-  padding: 10px 12px 10px 15px;
-  align-items: flex-start;
-  box-sizing: border-box;
-  line-height: 1.45;
-}
-.exam-transfer :deep(.el-transfer-panel__item .el-checkbox__input) {
-  top: 12px;
-}
-.exam-transfer :deep(.el-transfer-panel__item.el-checkbox .el-checkbox__label) {
-  white-space: normal !important;
-  line-height: 1.45 !important;
-  height: auto !important;
-  overflow: visible !important;
-  text-overflow: unset !important;
-  display: block;
-  width: 100%;
-  padding-left: 24px;
-  box-sizing: border-box;
-}
-.qb-transfer-item {
-  width: 100%;
-  padding: 4px 0;
-}
-.qb-transfer-stem {
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--sg-text);
-  word-break: break-word;
-}
-.qb-transfer-meta {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.qb-transfer-id {
-  font-size: 12px;
-  color: var(--sg-text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-.qb-transfer-score {
-  font-size: 12px;
-  color: var(--sg-text-secondary);
-}
-.transfer-empty {
-  padding: 24px 12px;
-  font-size: 13px;
-  color: var(--sg-text-secondary);
-  text-align: center;
-  line-height: 1.6;
 }
 .mb12 {
   margin-bottom: 12px;
@@ -1019,6 +1564,346 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
 .mb16 {
   margin-bottom: 16px;
 }
+
+/* 试卷配置弹窗 */
+.paper-config-dlg :deep(.el-dialog__header) {
+  padding: 18px 20px 12px;
+  margin-right: 0;
+  border-bottom: 1px solid #eef2f7;
+}
+.paper-config-dlg :deep(.el-dialog__body) {
+  padding: 0 20px 12px;
+}
+.paper-config-dlg :deep(.el-dialog__footer) {
+  padding: 12px 20px 18px;
+  border-top: 1px solid #eef2f7;
+}
+.paper-dlg-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-right: 24px;
+}
+.paper-dlg-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.paper-dlg-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.55;
+  max-width: 520px;
+}
+.paper-dlg-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.stat-chip {
+  font-size: 13px;
+  color: #64748b;
+  padding: 6px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+.stat-chip strong {
+  color: #0f172a;
+  font-weight: 600;
+}
+.stat-chip--primary {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.stat-chip--primary strong {
+  color: #1d4ed8;
+}
+
+.compose-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.paper-three-col {
+  display: grid;
+  grid-template-columns: 1fr 120px 1fr;
+  gap: 12px;
+  min-height: 460px;
+}
+@media (max-width: 960px) {
+  .paper-three-col {
+    grid-template-columns: 1fr;
+  }
+  .paper-col--actions {
+    flex-direction: row !important;
+    flex-wrap: wrap;
+  }
+}
+.paper-col {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  min-height: 420px;
+  overflow: hidden;
+}
+.paper-col--actions {
+  background: #fff;
+  border-style: dashed;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 10px;
+}
+.col-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+  background: #fff;
+}
+.col-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.col-meta {
+  font-size: 12px;
+  color: #94a3b8;
+}
+.col-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  border-bottom: 1px solid #eef2f7;
+}
+.col-filters .el-input:last-child {
+  grid-column: 1 / -1;
+}
+.question-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  max-height: 380px;
+}
+.col-empty {
+  padding: 32px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.q-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.q-card--pool:hover {
+  border-color: #93c5fd;
+}
+.q-card--picked {
+  cursor: pointer;
+}
+.q-card--picked.q-card--selected {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px #2563eb;
+}
+.q-card-stem {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #334155;
+  word-break: break-word;
+  margin-bottom: 8px;
+}
+.q-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.q-id,
+.q-score {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.q-add-btn {
+  width: 100%;
+}
+.q-picked-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.q-index {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.q-picked-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.action-stack .el-button {
+  margin: 0;
+  width: 100%;
+}
+.action-hint {
+  margin: 14px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.picked-overview {
+  padding: 12px;
+  background: #fff;
+  border-bottom: 1px solid #eef2f7;
+}
+.overview-row {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+.overview-row strong {
+  color: #0f172a;
+}
+.type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.type-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  color: #475569;
+}
+
+.random-panel {
+  padding: 4px 0 8px;
+}
+.random-lead {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
+}
+.rand-counts-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) {
+  .rand-counts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.rand-count-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+.rand-count-label {
+  font-size: 13px;
+  color: #64748b;
+}
+.rand-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.rand-label {
+  font-size: 13px;
+  color: #64748b;
+}
+.rand-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.paper-dlg-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.footer-summary {
+  font-size: 13px;
+  color: #64748b;
+}
+.footer-summary strong {
+  color: #0f172a;
+}
+.footer-warn {
+  color: #ea580c;
+}
+.footer-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.hint {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0 0 12px;
+}
+.preview-hint {
+  line-height: 1.55;
+}
+.paper-preview-lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: #64748b;
+}
+.paper-preview-lead strong {
+  color: #2563eb;
+  font-weight: 600;
+}
+
 .ai-pop {
   max-height: 360px;
   overflow: auto;
@@ -1026,7 +1911,7 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
 .ai-pop-item + .ai-pop-item {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--sg-border);
+  border-top: 1px solid #e2e8f0;
 }
 .ai-pop-title {
   font-size: 13px;
@@ -1037,23 +1922,24 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
   margin: 0;
   font-size: 13px;
   line-height: 1.55;
-  color: var(--sg-text-secondary);
+  color: #64748b;
 }
+
 .grade-drawer-body {
   padding-bottom: 24px;
 }
 .grade-hint {
   margin: 0 0 14px;
   font-size: 13px;
-  color: var(--sg-text-secondary);
+  color: #64748b;
   line-height: 1.5;
 }
 .grade-card {
-  border: 1px solid var(--sg-border);
-  border-radius: var(--sg-radius-md, 8px);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   padding: 12px 14px;
   margin-bottom: 14px;
-  background: var(--sg-bg-soft, rgba(0, 0, 0, 0.02));
+  background: #f8fafc;
 }
 .grade-card-head {
   display: flex;
@@ -1064,7 +1950,7 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
 }
 .grade-max {
   font-size: 12px;
-  color: var(--sg-text-secondary);
+  color: #64748b;
 }
 .grade-stem {
   font-size: 14px;
@@ -1074,7 +1960,7 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
 }
 .grade-label {
   font-size: 12px;
-  color: var(--sg-text-secondary);
+  color: #64748b;
   margin-bottom: 4px;
 }
 .grade-label-inline {
@@ -1088,20 +1974,20 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--el-fill-color-light);
+  background: #f1f5f9;
   border-radius: 6px;
   max-height: 220px;
   overflow: auto;
 }
 .grade-ai {
   font-size: 12px;
-  color: var(--sg-text-secondary);
+  color: #64748b;
   margin-bottom: 10px;
   line-height: 1.5;
 }
 .grade-ai-t {
   font-weight: 600;
-  color: var(--sg-text);
+  color: #0f172a;
   margin-right: 6px;
 }
 .grade-row {
@@ -1116,91 +2002,10 @@ useRtOnDomains(['qb_exams', 'qb_questions', 'scores'], () => {
   justify-content: flex-end;
   gap: 10px;
 }
+</style>
 
-.page-qb-exams .exam-panel {
-  border-radius: var(--sg-radius-lg, 12px);
-}
-.exam-page-head {
-  margin-bottom: 18px;
-}
-.exam-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0 2px;
-}
-.exam-toolbar-left {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-.exam-class-select {
-  width: 280px;
-}
-.exam-table :deep(.el-table__cell) {
-  vertical-align: middle;
-}
-.exam-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 8px;
-}
-.exam-row-actions :deep(.el-button + .el-button) {
-  margin-left: 0;
-}
-
-.rand-counts-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px 14px;
-  margin: 14px 0 10px;
-}
-@media (max-width: 900px) {
-  .rand-counts-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-.rand-count-cell {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-blank);
-}
-.rand-count-label {
-  font-size: 13px;
-  color: var(--sg-text-secondary, #606266);
-  flex-shrink: 0;
-}
-.rand-row-second {
-  margin-top: 4px;
-}
-.rand-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-}
-.preview-hint {
-  margin: 0 0 12px;
-  line-height: 1.55;
-}
-.paper-preview-lead {
-  margin: 0 0 14px;
-  font-size: 14px;
-  color: var(--sg-text-secondary, #606266);
-}
-.paper-preview-lead strong {
-  color: var(--el-color-primary);
-  font-weight: 600;
+<style>
+.exam-workbench {
+  background: transparent;
 }
 </style>

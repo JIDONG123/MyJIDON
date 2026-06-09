@@ -2,15 +2,29 @@ const pool = require('../config/database');
 const { toMysqlDateTime } = require('../utils/mysqlDateTime');
 const cache = require('../utils/cacheService');
 const {
+  parseTaskCodeRunConfig,
+  normalizeTaskCodeRunInput,
+} = require('../utils/taskCodeRunConfig');
+const {
   getStudentClassId,
+  getStudentTeachingClassIds,
   teacherManagesClass,
+  teacherManagesTeachingClass,
+  teacherCanViewTask,
   getTaskRow,
-  teacherOwnsTaskForGrading,
+  teacherTaskVisibilityWhere,
+  teacherTaskVisibilityParams,
   studentCanAccessTask,
   enterpriseHasClassAccess,
   enterpriseCanAccessTask,
 } = require('../utils/accessControl');
-const { safeNotify, notifyClassStudents } = require('../utils/notify');
+const { safeNotify, notifyClassStudents, notifyTeachingClassStudents } = require('../utils/notify');
+const {
+  TASK_CURRICULUM_SELECT,
+  TASK_CURRICULUM_JOINS,
+  taskAudienceStudentCountSql,
+} = require('../utils/curriculumQuery');
+const { parseId } = require('../utils/curriculumHelpers');
 const rt = require('../utils/realtimeEmit');
 
 async function bumpTaskRelatedCaches(taskId, createdBy) {
@@ -45,11 +59,13 @@ const getAllTasks = async (req, res) => {
              t.score_ai_weight, t.score_human_weight,
              t.campus_grade_weight, t.enterprise_grade_weight, t.step_checklist, t.difficulty_level,
              t.created_by, u.real_name as creator_name, t.created_at,
+             ${TASK_CURRICULUM_SELECT},
              (SELECT COUNT(*) FROM submissions s WHERE s.task_id = t.id) AS submissionCount,
-             (SELECT COUNT(*) FROM users st WHERE st.class_id = t.class_id AND st.role = 'student') AS classStudentCount,
+             ${taskAudienceStudentCountSql()},
              (SELECT COUNT(DISTINCT s2.student_id) FROM submissions s2 WHERE s2.task_id = t.id) AS submittedStudentCount
       FROM tasks t
       LEFT JOIN classes c ON t.class_id = c.id
+      ${TASK_CURRICULUM_JOINS}
       LEFT JOIN users u ON t.created_by = u.id
     `;
 
@@ -57,25 +73,57 @@ const getAllTasks = async (req, res) => {
     const where = [];
 
     if (role === 'teacher') {
-      where.push('t.created_by = ?');
-      params.push(uid);
+      where.push(teacherTaskVisibilityWhere('t'));
+      params.push(...teacherTaskVisibilityParams(uid));
     } else if (role === 'student') {
       const scid = await getStudentClassId(uid);
-      if (!scid) {
+      const tcIds = await getStudentTeachingClassIds(uid);
+      if (!scid && !tcIds.length) {
         return res.json({ success: true, data: [] });
       }
-      where.push('t.class_id = ?');
-      params.push(scid);
+      const vis = [];
+      if (scid) {
+        vis.push('t.class_id = ?');
+        params.push(scid);
+      }
+      if (tcIds.length) {
+        vis.push(`t.teaching_class_id IN (${tcIds.map(() => '?').join(',')})`);
+        params.push(...tcIds);
+      }
+      where.push(`(${vis.join(' OR ')})`);
     } else if (role === 'admin') {
       if (classId) {
         where.push('t.class_id = ?');
         params.push(classId);
       }
+      const teachingClassId = parseId(req.query.teachingClassId || req.query.teaching_class_id);
+      if (teachingClassId) {
+        where.push('t.teaching_class_id = ?');
+        params.push(teachingClassId);
+      }
+      const courseId = parseId(req.query.courseId || req.query.course_id);
+      if (courseId) {
+        where.push('t.course_id = ?');
+        params.push(courseId);
+      }
     } else if (role === 'enterprise') {
-      where.push(
-        't.class_id IN (SELECT class_id FROM enterprise_class_access WHERE enterprise_user_id = ?)'
-      );
-      params.push(uid);
+      where.push(`(
+        (t.class_id IS NOT NULL AND t.class_id IN (
+          SELECT class_id FROM enterprise_class_access WHERE enterprise_user_id = ?
+        ))
+        OR (t.teaching_class_id IS NOT NULL AND t.teaching_class_id IN (
+          SELECT teaching_class_id FROM enterprise_teaching_class_access WHERE enterprise_user_id = ?
+        ))
+      )`);
+      params.push(uid, uid);
+    }
+
+    if (role === 'teacher') {
+      const teachingClassId = parseId(req.query.teachingClassId || req.query.teaching_class_id);
+      if (teachingClassId) {
+        where.push('t.teaching_class_id = ?');
+        params.push(teachingClassId);
+      }
     }
 
     if (where.length) {
@@ -123,9 +171,12 @@ const getTaskById = async (req, res) => {
              t.deadline, t.class_id, c.class_name, t.is_public, t.max_score, t.max_submissions,
              t.score_ai_weight, t.score_human_weight,
              t.campus_grade_weight, t.enterprise_grade_weight, t.step_checklist, t.difficulty_level,
-             t.created_by, u.real_name as creator_name
+             t.code_run_enabled, t.code_run_language, t.code_run_config,
+             t.created_by, u.real_name as creator_name,
+             ${TASK_CURRICULUM_SELECT}
       FROM tasks t
       LEFT JOIN classes c ON t.class_id = c.id
+      ${TASK_CURRICULUM_JOINS}
       LEFT JOIN users u ON t.created_by = u.id
       WHERE t.id = ?
     `,
@@ -137,6 +188,14 @@ const getTaskById = async (req, res) => {
     }
 
     const row = tasks[0];
+    if (row.code_run_config && typeof row.code_run_config === 'string') {
+      try {
+        row.code_run_config = JSON.parse(row.code_run_config);
+      } catch {
+        row.code_run_config = null;
+      }
+    }
+    row.codeRunConfig = parseTaskCodeRunConfig(row.code_run_config);
 
     if (role === 'student') {
       const ok = await studentCanAccessTask(uid, taskId);
@@ -156,17 +215,25 @@ const getTaskById = async (req, res) => {
         row.submit_count = 0;
       }
       row.submit_remaining = Math.max(0, maxSub - row.submit_count);
-    } else if (role === 'teacher') {
-      if (row.created_by !== uid) {
-        return res.status(404).json({ success: false, message: '任务不存在' });
+      const { loadActiveResubmitPermission } = require('../services/submissionResubmitService');
+      const perm = await loadActiveResubmitPermission({
+        taskId,
+        studentId: uid,
+        submissionId: subs[0]?.id ?? null,
+      });
+      row.has_resubmit_permission = Boolean(perm);
+      row.resubmit_expire_at = perm?.expire_at || null;
+      if (perm && row.submit_remaining <= 0) {
+        row.submit_remaining = Math.max(0, Number(perm.extra_attempts) - Number(perm.used_attempts));
       }
-      const manages = await teacherManagesClass(uid, row.class_id);
-      if (!manages) {
-        return res.status(404).json({ success: false, message: '任务不存在' });
+    } else if (role === 'teacher') {
+      const ok = await teacherCanViewTask(uid, taskId);
+      if (!ok) {
+        return res.status(403).json({ success: false, message: '无权查看该任务' });
       }
       const [[sc]] = await pool.query(
         `SELECT COUNT(DISTINCT s.student_id) AS sub_n,
-                (SELECT COUNT(*) FROM users u WHERE u.class_id = t.class_id AND u.role = 'student') AS stu_n
+                ${taskAudienceStudentCountSql().replace(' AS classStudentCount', '')} AS stu_n
          FROM tasks t
          LEFT JOIN submissions s ON s.task_id = t.id
          WHERE t.id = ?`,
@@ -283,7 +350,12 @@ const createTask = async (req, res) => {
       enterpriseStandard,
       evaluationMetrics,
       deadline,
-      classId,
+      classId: classIdRaw,
+      teachingClassId: teachingClassIdRaw,
+      courseId: courseIdRaw,
+      projectTemplateId: projectTemplateIdRaw,
+      weekNo: weekNoRaw,
+      scheduleId: scheduleIdRaw,
       maxScore,
       scoreAiWeight,
       scoreHumanWeight,
@@ -292,10 +364,41 @@ const createTask = async (req, res) => {
       stepChecklist,
       difficultyLevel,
       maxSubmissions,
+      codeRunEnabled,
+      codeRunLanguage,
+      codeRunTimeoutSec,
+      codeRunGradeAfterRun,
+      codeRunEntryFile,
+      codeRunStdin,
     } = req.body;
 
-    if (!classId) {
-      return res.status(400).json({ success: false, message: '请选择发布班级' });
+    const codeRunFields = normalizeTaskCodeRunInput({
+      codeRunEnabled,
+      codeRunLanguage,
+      codeRunTimeoutSec,
+      codeRunGradeAfterRun,
+      codeRunEntryFile,
+      codeRunStdin,
+      code_run_enabled: req.body.code_run_enabled,
+      code_run_language: req.body.code_run_language,
+      code_run_config: req.body.code_run_config,
+    });
+    if (codeRunFields.error) {
+      return res.status(400).json({ success: false, message: codeRunFields.error });
+    }
+
+    const classId = classIdRaw ? Number(classIdRaw) : null;
+    const teachingClassId = parseId(teachingClassIdRaw || req.body.teaching_class_id);
+    let courseId = parseId(courseIdRaw || req.body.course_id);
+    const projectTemplateId = parseId(projectTemplateIdRaw || req.body.project_template_id);
+    const weekNo = parseId(weekNoRaw || req.body.week_no);
+    const scheduleId = parseId(scheduleIdRaw || req.body.schedule_id);
+
+    if (!classId && !teachingClassId) {
+      return res.status(400).json({ success: false, message: '请选择发布班级或教学班' });
+    }
+    if (classId && teachingClassId) {
+      return res.status(400).json({ success: false, message: '请勿同时绑定行政班与教学班' });
     }
 
     const deadlineMysql = toMysqlDateTime(deadline);
@@ -305,7 +408,19 @@ const createTask = async (req, res) => {
 
     const maxSubmissionsNorm = normalizeMaxSubmissions(maxSubmissions);
 
-    if (req.user.role === 'teacher') {
+    if (teachingClassId) {
+      if (req.user.role === 'teacher') {
+        const ok = await teacherManagesTeachingClass(req.user.id, teachingClassId);
+        if (!ok) {
+          return res.status(403).json({ success: false, message: '只能向自己负责的教学班发布任务' });
+        }
+      }
+      const [tcRows] = await pool.query('SELECT course_id FROM teaching_classes WHERE id = ?', [teachingClassId]);
+      if (!tcRows.length) {
+        return res.status(400).json({ success: false, message: '教学班不存在' });
+      }
+      if (!courseId) courseId = tcRows[0].course_id;
+    } else if (req.user.role === 'teacher') {
       const ok = await teacherManagesClass(req.user.id, classId);
       if (!ok) {
         return res.status(403).json({ success: false, message: '只能向自己负责的班级发布任务' });
@@ -329,9 +444,11 @@ const createTask = async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO tasks (
         title, description, requirements, scoring_criteria, scenario_type, enterprise_standard, evaluation_metrics,
-        deadline, class_id, is_public, max_score, max_submissions, score_ai_weight, score_human_weight,
-        campus_grade_weight, enterprise_grade_weight, step_checklist, difficulty_level, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        deadline, class_id, course_id, teaching_class_id, project_template_id, week_no, schedule_id,
+        is_public, max_score, max_submissions, score_ai_weight, score_human_weight,
+        campus_grade_weight, enterprise_grade_weight, step_checklist, difficulty_level,
+        code_run_enabled, code_run_language, code_run_config, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         title,
         description,
@@ -342,6 +459,11 @@ const createTask = async (req, res) => {
         metricsJson,
         deadlineMysql,
         classId,
+        courseId,
+        teachingClassId,
+        projectTemplateId,
+        weekNo,
+        scheduleId,
         maxScore || 100,
         maxSubmissionsNorm,
         wAi,
@@ -350,27 +472,48 @@ const createTask = async (req, res) => {
         dual.enterprise,
         stepJson,
         diffLv,
+        codeRunFields.enabled,
+        codeRunFields.language,
+        codeRunFields.configJson,
         req.user.id,
       ]
     );
 
     const newTaskId = result.insertId;
-    safeNotify(
-      notifyClassStudents(Number(classId), {
-        type: 'task_published',
-        title: '新实训任务发布',
-        body: `任务「${title}」已发布，请及时查看并提交。`,
-        refType: 'task',
-        refId: newTaskId,
-      })
-    );
+    if (classId) {
+      safeNotify(
+        notifyClassStudents(Number(classId), {
+          type: 'task_published',
+          title: '新实训任务发布',
+          body: `任务「${title}」已发布，请及时查看并提交。`,
+          refType: 'task',
+          refId: newTaskId,
+        })
+      );
+      try {
+        rt.emitTasksMutate(Number(classId), newTaskId, 'create');
+      } catch {
+        /* ignore */
+      }
+    }
+    if (teachingClassId) {
+      safeNotify(
+        notifyTeachingClassStudents(Number(teachingClassId), {
+          type: 'task_published',
+          title: '新实训任务发布',
+          body: `任务「${title}」已发布，请及时查看并提交。`,
+          refType: 'task',
+          refId: newTaskId,
+        })
+      );
+      try {
+        rt.emitTasksMutate(Number(teachingClassId), newTaskId, 'create');
+      } catch {
+        /* ignore */
+      }
+    }
 
     await bumpTaskRelatedCaches(newTaskId, req.user.id);
-    try {
-      rt.emitTasksMutate(Number(classId), newTaskId, 'create');
-    } catch {
-      /* ignore */
-    }
     res.status(201).json({ success: true, message: '任务创建成功', taskId: newTaskId });
   } catch (error) {
     res.status(500).json({ success: false, message: '创建失败', error: error.message });
@@ -400,7 +543,12 @@ const updateTask = async (req, res) => {
       enterpriseStandard,
       evaluationMetrics,
       deadline,
-      classId,
+      classId: classIdRaw,
+      teachingClassId: teachingClassIdRaw,
+      courseId: courseIdRaw,
+      projectTemplateId: projectTemplateIdRaw,
+      weekNo: weekNoRaw,
+      scheduleId: scheduleIdRaw,
       maxScore,
       scoreAiWeight,
       scoreHumanWeight,
@@ -409,10 +557,45 @@ const updateTask = async (req, res) => {
       stepChecklist,
       difficultyLevel,
       maxSubmissions,
+      codeRunEnabled,
+      codeRunLanguage,
+      codeRunTimeoutSec,
+      codeRunGradeAfterRun,
+      codeRunEntryFile,
+      codeRunStdin,
     } = req.body;
 
-    if (!classId) {
+    const codeRunFields = normalizeTaskCodeRunInput({
+      codeRunEnabled,
+      codeRunLanguage,
+      codeRunTimeoutSec,
+      codeRunGradeAfterRun,
+      codeRunEntryFile,
+      codeRunStdin,
+      code_run_enabled: req.body.code_run_enabled,
+      code_run_language: req.body.code_run_language,
+      code_run_config: req.body.code_run_config,
+    });
+    if (codeRunFields.error) {
+      return res.status(400).json({ success: false, message: codeRunFields.error });
+    }
+
+    const isTeachingTask = Boolean(existing.teaching_class_id);
+    const classId = isTeachingTask ? null : classIdRaw ? Number(classIdRaw) : existing.class_id;
+    const teachingClassId = isTeachingTask
+      ? parseId(teachingClassIdRaw || req.body.teaching_class_id) || existing.teaching_class_id
+      : null;
+    const courseId = parseId(courseIdRaw || req.body.course_id) || existing.course_id || null;
+    const projectTemplateId =
+      parseId(projectTemplateIdRaw || req.body.project_template_id) || existing.project_template_id || null;
+    const weekNo = parseId(weekNoRaw || req.body.week_no) ?? existing.week_no;
+    const scheduleId = parseId(scheduleIdRaw || req.body.schedule_id) ?? existing.schedule_id;
+
+    if (!isTeachingTask && !classId) {
       return res.status(400).json({ success: false, message: '请选择发布班级' });
+    }
+    if (isTeachingTask && !teachingClassId) {
+      return res.status(400).json({ success: false, message: '教学班无效' });
     }
 
     const deadlineMysql = toMysqlDateTime(deadline);
@@ -423,9 +606,19 @@ const updateTask = async (req, res) => {
     const maxSubmissionsNorm = normalizeMaxSubmissions(maxSubmissions);
 
     if (req.user.role === 'teacher') {
-      const ok = await teacherManagesClass(req.user.id, classId);
-      if (!ok) {
-        return res.status(403).json({ success: false, message: '只能指定自己负责的班级' });
+      if (Number(existing.created_by) !== Number(req.user.id)) {
+        return res.status(403).json({ success: false, message: '无权修改该任务' });
+      }
+      if (isTeachingTask) {
+        const tcOk = await teacherManagesTeachingClass(req.user.id, teachingClassId);
+        if (!tcOk) {
+          return res.status(403).json({ success: false, message: '只能指定自己负责的教学班' });
+        }
+      } else {
+        const okClass = await teacherManagesClass(req.user.id, classId);
+        if (!okClass) {
+          return res.status(403).json({ success: false, message: '只能指定自己负责的班级' });
+        }
       }
     }
 
@@ -445,8 +638,10 @@ const updateTask = async (req, res) => {
 
     await pool.query(
       `UPDATE tasks SET title = ?, description = ?, requirements = ?, scoring_criteria = ?, scenario_type = ?, enterprise_standard = ?, evaluation_metrics = ?,
-        deadline = ?, class_id = ?, is_public = 0, max_score = ?, max_submissions = ?, score_ai_weight = ?, score_human_weight = ?,
-        campus_grade_weight = ?, enterprise_grade_weight = ?, step_checklist = ?, difficulty_level = ?
+        deadline = ?, class_id = ?, course_id = ?, teaching_class_id = ?, project_template_id = ?, week_no = ?, schedule_id = ?,
+        is_public = 0, max_score = ?, max_submissions = ?, score_ai_weight = ?, score_human_weight = ?,
+        campus_grade_weight = ?, enterprise_grade_weight = ?, step_checklist = ?, difficulty_level = ?,
+        code_run_enabled = ?, code_run_language = ?, code_run_config = ?
         WHERE id = ?`,
       [
         title,
@@ -458,6 +653,11 @@ const updateTask = async (req, res) => {
         metricsJson,
         deadlineMysql,
         classId,
+        courseId,
+        teachingClassId,
+        projectTemplateId,
+        weekNo,
+        scheduleId,
         maxScore || 100,
         maxSubmissionsNorm,
         wAi,
@@ -466,13 +666,25 @@ const updateTask = async (req, res) => {
         dual.enterprise,
         stepJson,
         diffLv,
+        codeRunFields.enabled,
+        codeRunFields.language,
+        codeRunFields.configJson,
         taskId,
       ]
     );
 
     await bumpTaskRelatedCaches(taskId, existing.created_by);
     try {
-      rt.emitTasksMutate(Number(classId), Number(taskId), 'update');
+      const { clearTaskGradingContextCache } = require('../utils/gradingTaskContextCache');
+      const { clearGradingRagCacheForTeacher } = require('../utils/gradingRagCache');
+      await clearTaskGradingContextCache(taskId);
+      await clearGradingRagCacheForTeacher(existing.created_by);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const emitId = teachingClassId || classId;
+      if (emitId) rt.emitTasksMutate(Number(emitId), Number(taskId), 'update');
     } catch {
       /* ignore */
     }
@@ -505,7 +717,90 @@ const deleteTask = async (req, res) => {
   }
 };
 
-/** 学生：本班任务 + 本人完成状态；教师/管理员：校验班级访问权限 */
+/** 教学班任务列表（学生/教师/企业/管理员） */
+const getTasksByTeachingClass = async (req, res) => {
+  try {
+    const teachingClassId = Number(req.params.teachingClassId);
+    const role = req.user.role;
+    const uid = req.user.id;
+
+    if (role === 'student') {
+      const tcIds = await getStudentTeachingClassIds(uid);
+      if (!tcIds.includes(teachingClassId)) {
+        return res.status(403).json({ success: false, message: '无权查看该教学班任务' });
+      }
+      const [tasks] = await pool.query(
+        `
+        SELECT t.id, t.title, t.description, t.deadline, t.max_score, t.max_submissions, t.created_at,
+               tc.class_name AS teaching_class_name, co.course_name,
+               CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END AS completed,
+               s.id AS my_submission_id
+        FROM tasks t
+        LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+        LEFT JOIN courses co ON t.course_id = co.id
+        LEFT JOIN submissions s ON s.task_id = t.id AND s.student_id = ?
+        WHERE t.teaching_class_id = ?
+        ORDER BY t.deadline ASC
+      `,
+        [uid, teachingClassId]
+      );
+      return res.json({ success: true, data: tasks });
+    }
+
+    if (role === 'enterprise') {
+      const { enterpriseHasTeachingClassAccess } = require('../utils/accessControl');
+      const ok = await enterpriseHasTeachingClassAccess(uid, teachingClassId);
+      if (!ok) {
+        return res.status(403).json({ success: false, message: '无权查看该教学班任务' });
+      }
+      const [tasks] = await pool.query(
+        `
+        SELECT t.id, t.title, t.description, t.deadline, t.max_score, t.created_at, t.created_by,
+               t.campus_grade_weight, t.enterprise_grade_weight, t.difficulty_level,
+               tc.class_name AS teaching_class_name, co.course_name
+        FROM tasks t
+        LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+        LEFT JOIN courses co ON t.course_id = co.id
+        WHERE t.teaching_class_id = ?
+        ORDER BY t.deadline ASC
+      `,
+        [teachingClassId]
+      );
+      return res.json({ success: true, data: tasks });
+    }
+
+    if (role === 'teacher') {
+      const ok = await teacherManagesTeachingClass(uid, teachingClassId);
+      if (!ok) {
+        return res.status(403).json({ success: false, message: '无权查看该教学班任务' });
+      }
+    }
+
+    const [tasks] = await pool.query(
+      `
+      SELECT t.id, t.title, t.description, t.deadline, t.max_score, t.created_at, t.created_by,
+             (SELECT COUNT(*) FROM teaching_class_students tcs WHERE tcs.teaching_class_id = t.teaching_class_id) AS classStudentCount,
+             (SELECT COUNT(DISTINCT s2.student_id) FROM submissions s2 WHERE s2.task_id = t.id) AS submittedStudentCount,
+             tc.class_name AS teaching_class_name, co.course_name
+      FROM tasks t
+      LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+      LEFT JOIN courses co ON t.course_id = co.id
+      WHERE t.teaching_class_id = ?${role === 'teacher' ? ' AND t.created_by = ?' : ''}
+      ORDER BY t.deadline ASC
+    `,
+      role === 'teacher' ? [teachingClassId, uid] : [teachingClassId]
+    );
+
+    res.json({ success: true, data: tasks });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取教学班任务失败', error: error.message });
+  }
+};
+
+/** 学生：行政班 legacy 任务 + 本人完成状态；教师/管理员：校验班级访问权限
+ *  Legacy API：仅返回 class_id 匹配且 teaching_class_id IS NULL 的行政班任务。
+ *  新学生端实训中心请优先使用 GET /api/tasks；本接口仍供档案筛选、教师导出、知识图谱等场景使用。
+ */
 const getTasksByClass = async (req, res) => {
   try {
     const classId = Number(req.params.classId);
@@ -524,7 +819,7 @@ const getTasksByClass = async (req, res) => {
                s.id AS my_submission_id
         FROM tasks t
         LEFT JOIN submissions s ON s.task_id = t.id AND s.student_id = ?
-        WHERE t.class_id = ?
+        WHERE t.class_id = ? AND t.teaching_class_id IS NULL
         ORDER BY t.deadline ASC
       `,
         [uid, classId]
@@ -542,7 +837,7 @@ const getTasksByClass = async (req, res) => {
         SELECT t.id, t.title, t.description, t.deadline, t.max_score, t.created_at, t.created_by,
                t.campus_grade_weight, t.enterprise_grade_weight, t.difficulty_level
         FROM tasks t
-        WHERE t.class_id = ?
+        WHERE t.class_id = ? AND t.teaching_class_id IS NULL
         ORDER BY t.deadline ASC
       `,
         [classId]
@@ -563,16 +858,11 @@ const getTasksByClass = async (req, res) => {
              (SELECT COUNT(*) FROM users st WHERE st.class_id = t.class_id AND st.role = 'student') AS classStudentCount,
              (SELECT COUNT(DISTINCT s2.student_id) FROM submissions s2 WHERE s2.task_id = t.id) AS submittedStudentCount
       FROM tasks t
-      WHERE t.class_id = ?
+      WHERE t.class_id = ? AND t.teaching_class_id IS NULL${role === 'teacher' ? ' AND t.created_by = ?' : ''}
       ORDER BY t.deadline ASC
     `,
-      [classId]
+      role === 'teacher' ? [classId, uid] : [classId]
     );
-
-    if (role === 'teacher') {
-      const filtered = tasks.filter((t) => t.created_by === uid);
-      return res.json({ success: true, data: filtered });
-    }
 
     res.json({ success: true, data: tasks });
   } catch (error) {
@@ -593,11 +883,8 @@ const getTaskSubmissionOverview = async (req, res) => {
     const role = req.user.role;
 
     if (role === 'teacher') {
-      if (Number(task.created_by) !== Number(uid)) {
-        return res.status(403).json({ success: false, message: '无权查看该任务统计' });
-      }
-      const manages = await teacherManagesClass(uid, task.class_id);
-      if (!manages) {
+      const ok = await teacherCanViewTask(uid, taskId);
+      if (!ok) {
         return res.status(403).json({ success: false, message: '无权查看该任务统计' });
       }
     } else if (role !== 'admin') {
@@ -606,10 +893,22 @@ const getTaskSubmissionOverview = async (req, res) => {
 
     const deadline = task.deadline ? new Date(task.deadline) : null;
 
-    const [students] = await pool.query(
-      `SELECT id, real_name, student_no, username FROM users WHERE class_id = ? AND role = 'student' ORDER BY student_no, username`,
-      [task.class_id]
-    );
+    let students;
+    if (task.teaching_class_id) {
+      [students] = await pool.query(
+        `SELECT u.id, u.real_name, u.student_no, u.username
+         FROM teaching_class_students tcs
+         INNER JOIN users u ON u.id = tcs.student_id
+         WHERE tcs.teaching_class_id = ?
+         ORDER BY u.student_no, u.username`,
+        [task.teaching_class_id]
+      );
+    } else {
+      [students] = await pool.query(
+        `SELECT id, real_name, student_no, username FROM users WHERE class_id = ? AND role = 'student' ORDER BY student_no, username`,
+        [task.class_id]
+      );
+    }
 
     const [subs] = await pool.query(`SELECT student_id, submitted_at FROM submissions WHERE task_id = ?`, [taskId]);
     const subMap = new Map(subs.map((s) => [Number(s.student_id), s]));
@@ -653,6 +952,7 @@ const getTaskSubmissionOverview = async (req, res) => {
 };
 
 module.exports = {
+  getTasksByTeachingClass,
   getAllTasks,
   getTaskById,
   createTask,

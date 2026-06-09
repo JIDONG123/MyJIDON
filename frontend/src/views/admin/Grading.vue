@@ -26,10 +26,16 @@
         :file-url="submissionWork.fileUrl"
         :file-type="submissionWork.fileType"
       />
+      <VlRecognitionPanel
+        :submission-id="route.params.submissionId"
+        :initial="submissionMeta"
+        @updated="loadSubmissionMeta"
+      />
+      <KgGradingEnhancePanel :submission-id="route.params.submissionId" />
       <el-empty description="暂无批改结果">
         <template #default>
           <p class="empty-hint">
-            该提交尚未生成 AI 批改记录。大模型批改耗时较长，请先在列表中点击「AI批改」并等待完成，或点击下方按钮在此页发起批改。
+            该提交尚未生成 AI 批改记录。点击下方发起后，任务将在后台执行，您可继续使用系统；进度见右下角卡片或「批改任务」。
           </p>
           <el-button type="primary" @click="runAiGrade">发起 AI 批改</el-button>
           <el-button @click="$router.back()">返回提交列表</el-button>
@@ -95,6 +101,12 @@
         :file-url="submissionWork.fileUrl"
         :file-type="submissionWork.fileType"
       />
+      <VlRecognitionPanel
+        :submission-id="route.params.submissionId"
+        :initial="submissionMeta"
+        @updated="loadSubmissionMeta"
+      />
+      <KgGradingEnhancePanel :submission-id="route.params.submissionId" />
 
       <div class="charts-row">
         <div class="score-card stretch">
@@ -206,12 +218,15 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getGradingResult, humanReview, aiGradeSubmission, waitForAiGradingComplete } from '../../api/grading'
+import { getGradingResult, humanReview, aiGradeSubmission } from '../../api/grading'
 import VerificationTeacherOverridePanel from '../../components/VerificationTeacherOverridePanel.vue'
 import LangchainDeepPanel from '../../components/LangchainDeepPanel.vue'
 import SubmissionWorkDisplay from '../../components/SubmissionWorkDisplay.vue'
+import VlRecognitionPanel from '../../components/VlRecognitionPanel.vue'
+import KgGradingEnhancePanel from '../../components/kg/KgGradingEnhancePanel.vue'
 import { getSubmissionById } from '../../api/submission'
-import { withGradingLoading } from '../../utils/gradingLoading'
+import { applyGradingJobResponse, gradingJobErrorMessage } from '../../utils/gradingJobSubmit'
+import { useRtOnDomains } from '../../composables/useRtOnDomains'
 import { downloadPersonalPdf } from '../../api/report'
 import { mergeSubmissionWork, workFromGradingRow, workFromSubmissionApi } from '../../utils/submissionWorkMerge'
 import { ElMessage } from 'element-plus'
@@ -363,47 +378,26 @@ const retryLoad = () => loadResult({ showSkeleton: true })
 
 const runAiGrade = async () => {
   try {
-    const res = await withGradingLoading(
-      false,
-      async () => {
-        const res = await aiGradeSubmission(route.params.submissionId)
-        if (!res.success) return res
-        if (res.data?.async) {
-          ElMessage.success('已提交 AI 批改，后台处理中…')
-          await loadResult({ showSkeleton: false })
-          const wait = await waitForAiGradingComplete(route.params.submissionId)
-          await loadResult({ showSkeleton: false })
-          if (wait.failed) {
-            ElMessage.error(wait.data?.ai_comment || 'AI 批改失败')
-            return res
-          }
-          if (wait.ok && !wait.timeout) {
-            ElMessage.success('AI 批改完成')
-          } else if (wait.timeout) {
-            ElMessage.warning('批改等待超时，请稍后刷新页面查看结果')
-          }
-        } else {
-          ElMessage.success('AI 批改完成')
-          await loadResult({ showSkeleton: false })
-        }
-        return res
-      },
-      true
-    )
-    if (!res || !res.success) return
+    const res = await aiGradeSubmission(route.params.submissionId)
+    if (!res.success) {
+      ElMessage.error(res.message || '提交失败')
+      return
+    }
+    applyGradingJobResponse(res, { submissionId: route.params.submissionId })
+    if (result.value) {
+      result.value = { ...result.value, status: 'ai_grading' }
+    }
+    missingResult.value = false
+    await loadResult({ showSkeleton: false })
   } catch (error) {
-    const msg =
-      error?.response?.data?.message ||
-      error?.response?.data?.error ||
-      error?.message ||
-      'AI 批改失败'
-    ElMessage.error(msg)
+    ElMessage.error(gradingJobErrorMessage(error))
   }
 }
 
 const getStatusType = (status) => {
+  if (status == null || status === '') return 'warning'
   const types = {
-    pending: 'info',
+    pending: 'warning',
     ai_grading: 'warning',
     ai_failed: 'danger',
     ai_graded: 'warning',
@@ -413,6 +407,7 @@ const getStatusType = (status) => {
 }
 
 const getStatusText = (status) => {
+  if (status == null || status === '') return '待批改'
   const texts = {
     pending: '待批改',
     ai_grading: 'AI批改中',
@@ -457,6 +452,17 @@ const onResize = () => radarChart?.resize()
 onMounted(() => {
   loadResult({ showSkeleton: true })
   window.addEventListener('resize', onResize)
+})
+
+useRtOnDomains(['grading', 'submissions', 'grading_job'], (p) => {
+  const sid = route.params.submissionId
+  if (p.domain === 'grading_job') {
+    if (p.submissionId != null && String(p.submissionId) !== String(sid)) return
+    if (!['item_done', 'job_finished'].includes(p.action)) return
+  } else if (p.submissionId != null && String(p.submissionId) !== String(sid)) {
+    return
+  }
+  void loadResult({ showSkeleton: false })
 })
 
 onBeforeUnmount(() => {

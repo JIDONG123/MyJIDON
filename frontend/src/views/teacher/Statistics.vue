@@ -2,30 +2,41 @@
   <div class="page-statistics">
     <header class="page-head">
       <div>
-        <h1 class="page-title">班级实训数据统计</h1>
-        <p class="page-desc">选择班级查看分数分布、等级占比与维度雷达</p>
+        <h1 class="page-title">实训数据统计</h1>
+        <p class="page-desc">按行政班、教学班或课程查看分数分布、等级占比与维度雷达；导出含课程/教学班/学期/实训项目字段</p>
       </div>
     </header>
 
     <el-card class="toolbar-card" shadow="never">
       <div class="toolbar">
         <div class="toolbar-left">
-          <span class="toolbar-label">当前班级</span>
+          <span class="toolbar-label">统计范围</span>
+          <el-select v-model="statScope" class="scope-select" @change="onScopeChange">
+            <el-option label="行政班" value="legacy_class" />
+            <el-option label="教学班" value="teaching_class" />
+            <el-option v-if="canUseCourseScope" label="课程（负责人）" value="course" />
+          </el-select>
           <el-select
-            v-model="selectedClass"
-            placeholder="选择班级"
+            v-model="selectedScopeId"
+            placeholder="请选择"
             class="class-select"
-            :loading="classesLoading"
+            :loading="scopeLoading"
             clearable
+            filterable
           >
-            <el-option v-for="cls in classes" :key="cls.id" :label="cls.class_name" :value="cls.id" />
+            <el-option
+              v-for="opt in scopeOptions"
+              :key="opt.id"
+              :label="opt.label"
+              :value="opt.id"
+            />
           </el-select>
         </div>
         <div class="toolbar-actions">
           <el-button
             type="success"
             class="export-btn"
-            :disabled="!selectedClass"
+            :disabled="!selectedScopeId"
             @click="exportExcel"
           >
             <el-icon class="btn-icon"><Download /></el-icon>
@@ -35,7 +46,7 @@
             type="primary"
             plain
             class="export-btn export-btn--pdf"
-            :disabled="!selectedClass"
+            :disabled="!selectedScopeId"
             @click="exportPdf"
           >
             <el-icon class="btn-icon"><Document /></el-icon>
@@ -45,10 +56,10 @@
       </div>
     </el-card>
 
-    <el-skeleton v-if="classesLoading" animated :rows="5" class="sk-block" />
+    <el-skeleton v-if="scopeLoading" animated :rows="5" class="sk-block" />
 
-    <template v-else-if="!classes.length">
-      <el-empty description="暂无班级，请先在管理端创建班级并关联学生" :image-size="120">
+    <template v-else-if="!scopeOptions.length">
+      <el-empty description="暂无可用统计范围，请先创建行政班/教学班或课程" :image-size="120">
         <template #image>
           <div class="empty-illus">
             <el-icon><OfficeBuilding /></el-icon>
@@ -77,7 +88,7 @@
           </el-row>
 
           <el-empty
-            v-else-if="selectedClass"
+            v-else-if="selectedScopeId"
             description="暂无统计数据"
             :image-size="100"
             class="empty-stats"
@@ -165,16 +176,55 @@ import {
   Document,
 } from '@element-plus/icons-vue'
 import { getAllClasses } from '../../api/class'
-import { getClassStatistics, exportClassScores } from '../../api/dashboard'
-import { downloadClassPdf } from '../../api/report'
+import { listMyTeachingClasses } from '../../api/teachingClass'
+import { listMyCourses, listCourses } from '../../api/course'
+import { getPracticeStatistics, exportPracticeScores } from '../../api/dashboard'
+import { downloadPracticePdf } from '../../api/report'
+import { useUserStore } from '../../stores/user'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
+const userStore = useUserStore()
 
 const classes = ref([])
-const classesLoading = ref(true)
-const selectedClass = ref('')
+const teachingClasses = ref([])
+const courses = ref([])
+const scopeLoading = ref(true)
+const statScope = ref('legacy_class')
+const selectedScopeId = ref('')
+
+const scopeOptions = computed(() => {
+  if (statScope.value === 'teaching_class') {
+    return (teachingClasses.value || []).map((tc) => ({
+      id: tc.id,
+      label: [tc.class_name, tc.course_name, tc.term_name].filter(Boolean).join(' · '),
+    }))
+  }
+  if (statScope.value === 'course') {
+    return leaderCourses.value.map((co) => ({
+      id: co.id,
+      label: [co.course_code, co.course_name].filter(Boolean).join(' '),
+    }))
+  }
+  return (classes.value || []).map((c) => ({
+    id: c.id,
+    label: c.class_name || c.className,
+  }))
+})
+
+const leaderCourses = computed(() => {
+  const list = courses.value || []
+  if (userStore.user?.role === 'admin') return list
+  return list.filter((c) => (c.my_roles || []).includes('course_leader'))
+})
+
+const canUseCourseScope = computed(() => leaderCourses.value.length > 0)
+
+/** 兼容导出 PDF 等仍用 classId 的场景 */
+const selectedClass = computed(() =>
+  statScope.value === 'legacy_class' ? selectedScopeId.value : ''
+)
 const statistics = ref(null)
 const statsLoading = ref(false)
 const dimensionRadar = ref([])
@@ -260,29 +310,61 @@ const disposeCharts = () => {
   radarChartInstance = null
 }
 
-const loadClasses = async () => {
-  classesLoading.value = true
+function practiceStatsParams() {
+  const base = { scopeType: statScope.value, scopeId: selectedScopeId.value }
+  if (statScope.value === 'legacy_class') base.classId = selectedScopeId.value
+  if (statScope.value === 'teaching_class') base.teachingClassId = selectedScopeId.value
+  if (statScope.value === 'course') base.courseId = selectedScopeId.value
+  return base
+}
+
+const onScopeChange = () => {
+  if (statScope.value === 'course' && !canUseCourseScope.value) {
+    statScope.value = 'teaching_class'
+  }
+  selectedScopeId.value = scopeOptions.value[0]?.id || ''
+  loadStatistics()
+}
+
+const loadScopeLists = async () => {
+  scopeLoading.value = true
   try {
-    const response = await getAllClasses()
-    if (response.success) {
-      classes.value = response.data || []
-      const qid = route.query.classId
-      if (qid) {
-        const found = classes.value.some((c) => String(c.id) === String(qid))
-        selectedClass.value = found ? Number(qid) : classes.value[0]?.id || ''
-      } else if (classes.value.length > 0 && !selectedClass.value) {
-        selectedClass.value = classes.value[0].id
-      }
+    const role = userStore.user?.role
+    const courseRequest =
+      role === 'teacher'
+        ? listMyCourses()
+        : role === 'admin'
+          ? listCourses()
+          : Promise.resolve({ success: true, data: [] })
+
+    const [clsRes, tcRes, coRes] = await Promise.all([
+      getAllClasses(),
+      listMyTeachingClasses(),
+      courseRequest,
+    ])
+    if (clsRes.success) classes.value = clsRes.data || []
+    if (tcRes.success) teachingClasses.value = tcRes.data || []
+    if (coRes.success) courses.value = coRes.data || []
+
+    const qid = route.query.classId
+    if (qid && classes.value.some((c) => String(c.id) === String(qid))) {
+      statScope.value = 'legacy_class'
+      selectedScopeId.value = Number(qid)
+    } else if (statScope.value === 'course' && !canUseCourseScope.value) {
+      statScope.value = teachingClasses.value.length ? 'teaching_class' : 'legacy_class'
+      selectedScopeId.value = scopeOptions.value[0]?.id || ''
+    } else if (!selectedScopeId.value) {
+      selectedScopeId.value = scopeOptions.value[0]?.id || ''
     }
   } catch (error) {
     console.error(error)
   } finally {
-    classesLoading.value = false
+    scopeLoading.value = false
   }
 }
 
 const loadStatistics = async () => {
-  if (!selectedClass.value) {
+  if (!selectedScopeId.value) {
     statistics.value = null
     dimensionRadar.value = []
     disposeCharts()
@@ -295,7 +377,7 @@ const loadStatistics = async () => {
   disposeCharts()
 
   try {
-    const response = await getClassStatistics(selectedClass.value)
+    const response = await getPracticeStatistics(practiceStatsParams())
     if (response.success) {
       statistics.value = response.data
       dimensionRadar.value = response.data.dimensionRadar || []
@@ -562,19 +644,19 @@ const renderRadar = (dims) => {
 }
 
 const exportExcel = async () => {
-  if (!selectedClass.value) {
-    ElMessage.warning('请先选择班级')
+  if (!selectedScopeId.value) {
+    ElMessage.warning('请先选择统计范围')
     return
   }
   try {
-    const response = await exportClassScores(selectedClass.value)
+    const response = await exportPracticeScores(practiceStatsParams())
     const blob = new Blob([response], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `班级成绩表_${selectedClass.value}.xlsx`
+    link.download = `实训成绩_${statScope.value}_${selectedScopeId.value}.xlsx`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -587,13 +669,13 @@ const exportExcel = async () => {
 }
 
 const exportPdf = async () => {
-  if (!selectedClass.value) {
-    ElMessage.warning('请先选择班级')
+  if (!selectedScopeId.value) {
+    ElMessage.warning('请先选择统计范围')
     return
   }
   try {
-    await downloadClassPdf(selectedClass.value)
-    ElMessage.success('已开始下载班级 PDF')
+    await downloadPracticePdf(practiceStatsParams())
+    ElMessage.success('已开始下载 PDF 报告')
   } catch (e) {
     ElMessage.error(e?.message || '导出 PDF 失败')
   }
@@ -606,11 +688,12 @@ const handleResize = () => {
 }
 
 onMounted(async () => {
-  await loadClasses()
+  await loadScopeLists()
+  if (selectedScopeId.value) await loadStatistics()
   window.addEventListener('resize', handleResize)
 })
 
-watch(selectedClass, () => {
+watch([statScope, selectedScopeId], () => {
   loadStatistics()
 })
 

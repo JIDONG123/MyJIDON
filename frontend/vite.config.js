@@ -7,6 +7,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [vue()],
+    build: {
+      chunkSizeWarningLimit: 1600,
+    },
+    // 仅本地开发：npm run dev（5173 热更新 + 代理）
     server: {
       port: 5173,
       proxy: {
@@ -15,14 +19,10 @@ export default defineConfig(({ mode }) => {
         '/socket.io': { target: proxyTarget, changeOrigin: true, ws: true },
       },
     },
+    // 生产构建 dist 由 Nginx 托管，不使用 preview 代理
     preview: {
       port: 5173,
       host: true,
-      proxy: {
-        '/api': { target: proxyTarget, changeOrigin: true },
-        '/uploads': { target: proxyTarget, changeOrigin: true },
-        '/socket.io': { target: proxyTarget, changeOrigin: true, ws: true },
-      },
     },
   }
 })

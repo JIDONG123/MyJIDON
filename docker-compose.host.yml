@@ -1,0 +1,36 @@
+# 龙芯 VM — Neo4j 可选方案：
+#   A. 宿主机 /opt/neo4j（推荐，见 docs/04-deployment.md §4.2.6）
+#   B. 本文件 Docker（LoongArch 上可能 segfault，不推荐）
+#
+# 启动：docker compose -f docker-compose.host.yml up -d
+# 开机自启：install-autostart.sh 已注册 smart-grading-neo4j.service
+
+name: loongarch-grading-host
+
+volumes:
+  neo4j_data:
+
+services:
+  neo4j:
+    image: cr.loongnix.cn/library/neo4j-community:latest
+    container_name: sg-neo4j
+    restart: always
+    # 龙芯 LoongArch：镜像默认 tini 会报 sigprocmask failed，绕过 tini 直接启动
+    init: false
+    entrypoint: ["/startup/docker-entrypoint.sh"]
+    command: ["neo4j"]
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      # 龙芯 LoongArch：neo4j-admin set-initial-password 会 segfault，默认 none 跳过设密（仅本机 7687）
+      # 若镜像正常可改 .env：NEO4J_AUTH=neo4j/你的密码
+      NEO4J_AUTH: ${NEO4J_AUTH:-none}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL:-512m}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX:-1G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512m}
+      TZ: Asia/Shanghai
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "7474:7474"
+      - "7687:7687"

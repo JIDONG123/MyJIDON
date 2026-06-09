@@ -1,176 +1,295 @@
 <template>
-  <div class="page-qb">
-    <header class="page-head">
-      <h1 class="page-title">题库管理</h1>
-      <p class="page-desc">按题型可视化出题：客观题用表单配置选项与标准答案；简答/编程题填写参考答案要点。</p>
+  <div class="tw-page teacher-qb-page">
+    <header class="tw-head">
+      <div class="tw-head__left">
+        <div>
+          <h1 class="tw-title">题库管理</h1>
+          <p class="tw-subtitle">
+            建设课程题库，支持单题录入、Excel 批量导入、题型筛选与组卷调用。
+          </p>
+          <p class="tw-sub">教师在此维护自己的题库，用于习题练习、在线考试和组卷配置。</p>
+        </div>
+      </div>
     </header>
 
-    <el-card shadow="never" class="panel-card">
-      <div class="toolbar-row">
-        <el-input v-model="keyword" placeholder="搜索题干或课程" clearable class="search-inp" @keyup.enter="load" />
-        <el-select v-model="filterType" placeholder="题型" clearable style="width: 140px" @change="load">
-          <el-option label="单选" value="single" />
-          <el-option label="多选" value="multi" />
-          <el-option label="判断" value="judge" />
-          <el-option label="填空" value="fill" />
-          <el-option label="简答" value="short" />
-          <el-option label="编程" value="code" />
-        </el-select>
-        <el-button type="primary" @click="load">查询</el-button>
-        <el-button @click="openCreate">新增题目</el-button>
-        <el-button @click="downloadTpl">下载 Excel 模板</el-button>
-        <el-upload :show-file-list="false" accept=".xlsx" :before-upload="handleImport">
-          <el-button :loading="importing">批量导入</el-button>
-        </el-upload>
-      </div>
+    <el-skeleton v-if="initialLoading" animated :rows="12" />
 
-      <el-table v-loading="loading" :data="rows" border stripe class="data-table qb-table" style="width: 100%; margin-top: 16px">
-        <el-table-column label="序号" width="64" align="center">
-          <template #default="{ $index }">{{ (page - 1) * pageSize + $index + 1 }}</template>
-        </el-table-column>
-        <el-table-column label="题库ID" width="88" align="center">
-          <template #default="{ row }">
-            <el-tooltip content="数据库主键，删除或导入后不会从 1 重排" placement="top">
-              <span class="col-id">{{ row.id }}</span>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column label="题型" width="100" align="center">
-          <template #default="{ row }">
-            <el-tag size="small" type="primary" effect="plain">{{ qbTypeLabel(row.type) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="stem" label="题干" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="default_score" label="分值" width="72" align="right" />
-        <el-table-column label="难度" width="88" align="center">
-          <template #default="{ row }">
-            <el-tag size="small" :type="qbDifficultyTagType(row.difficulty)" effect="light">{{ qbDifficultyLabel(row.difficulty) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="course_label" label="课程" min-width="100" show-overflow-tooltip />
-        <el-table-column prop="usage_count" label="引用" width="72" align="center" />
-        <el-table-column label="操作" width="220" align="right" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="primary" @click="openUsage(row)">使用记录</el-button>
-            <el-button link type="danger" @click="remove(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div class="pager-wrap">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          background
-          @current-change="load"
-        />
-      </div>
-    </el-card>
+    <template v-else>
+      <section class="tw-metric-grid">
+        <div v-for="card in overviewCards" :key="card.key" class="tw-metric-card">
+          <div class="tw-metric-card__icon" :class="`tw-metric-card__icon--${card.tone}`">
+            <el-icon><component :is="card.icon" /></el-icon>
+          </div>
+          <div class="tw-metric-card__body">
+            <span class="tw-metric-card__label">{{ card.label }}</span>
+            <span class="tw-metric-card__value">{{ card.value }}</span>
+          </div>
+        </div>
+      </section>
 
-    <el-dialog v-model="dlg" :title="editId ? '编辑题目' : '新增题目'" width="720px" destroy-on-close @closed="resetForm">
-      <el-form label-width="100px">
-        <el-form-item label="题型">
-          <el-select v-model="form.type" style="width: 100%" @change="onTypeChange">
-            <el-option v-for="t in typeOpts" :key="t.v" :label="t.l" :value="t.v" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="题干">
-          <el-input v-model="form.stem" type="textarea" :rows="3" placeholder="请输入题目描述" />
-        </el-form-item>
+      <section class="tw-panel tw-filter-bar">
+        <div class="filter-toolbar">
+          <div class="filter-toolbar__filters">
+            <el-input
+              v-model="keyword"
+              placeholder="搜索题干 / 课程"
+              clearable
+              class="filter-toolbar__search"
+              @keyup.enter="applySearch"
+            >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+            </el-input>
+            <el-select v-model="filterType" clearable placeholder="题型" class="filter-toolbar__select">
+              <el-option v-for="t in typeOpts" :key="t.v" :label="t.l" :value="t.v" />
+            </el-select>
+            <el-select v-model="filterDifficulty" clearable placeholder="难度" class="filter-toolbar__select">
+              <el-option label="易" value="easy" />
+              <el-option label="中" value="medium" />
+              <el-option label="难" value="hard" />
+            </el-select>
+            <el-select v-model="filterCourse" clearable filterable placeholder="课程标签" class="filter-toolbar__select">
+              <el-option v-for="c in courseOptions" :key="c" :label="c" :value="c" />
+            </el-select>
+            <el-button type="primary" plain @click="applySearch">查询</el-button>
+            <el-button v-if="hasActiveFilters" plain @click="resetFilters">重置</el-button>
+          </div>
+          <div class="filter-toolbar__actions">
+            <el-button type="primary" @click="openCreate">
+              <el-icon><Plus /></el-icon>
+              新增题目
+            </el-button>
+            <el-button plain @click="downloadTpl">下载 Excel 模板</el-button>
+            <el-upload :show-file-list="false" accept=".xlsx" :before-upload="handleImport">
+              <el-button plain :loading="importing">批量导入</el-button>
+            </el-upload>
+          </div>
+        </div>
+      </section>
 
-        <!-- 单选 / 多选 -->
-        <template v-if="form.type === 'single' || form.type === 'multi'">
-          <el-form-item label="选项">
-            <div class="opt-list">
-              <div v-for="(row, idx) in ui.mcOptions" :key="idx" class="opt-row">
-                <el-input v-model="row.key" maxlength="4" class="opt-key" placeholder="键" />
-                <el-input v-model="row.label" class="opt-label" placeholder="选项文字" />
-                <el-button v-if="ui.mcOptions.length > 2" link type="danger" @click="removeMcOption(idx)">删除</el-button>
-              </div>
-              <el-button size="small" @click="addMcOption">添加选项</el-button>
+      <section class="tw-panel">
+        <div class="tw-panel__header">
+          <h2 class="tw-panel__title">我的题目</h2>
+          <span class="tw-panel__meta">共 {{ displayTotal }} 题</span>
+        </div>
+
+        <div v-if="!loading && displayTotal === 0" class="tw-panel__body tw-empty-panel">
+          <el-empty description="暂无题目，可新增或批量导入" :image-size="96">
+            <el-button type="primary" @click="openCreate">新增题目</el-button>
+          </el-empty>
+        </div>
+
+        <div v-else class="tw-panel__body tw-panel__body--flush">
+          <el-skeleton v-if="loading" animated :rows="8" />
+          <template v-else>
+            <el-table :data="pagedRows" class="qb-table" style="width: 100%">
+              <el-table-column label="题目信息" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <div class="info-cell">
+                    <span class="info-cell__title">{{ qbStemSummary(row.stem) }}</span>
+                    <span class="info-cell__sub">#{{ row.id }} · {{ formatDateTime(row.created_at) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="题型" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="light" type="primary">{{ qbTypeLabel(row.type) }}</el-tag>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="分值 / 难度" width="120">
+                <template #default="{ row }">
+                  <div class="score-diff">
+                    <span>{{ row.default_score ?? '—' }} 分</span>
+                    <el-tag size="small" effect="light" :type="qbDifficultyTagType(row.difficulty)">
+                      {{ qbDifficultyLabel(row.difficulty) }}
+                    </el-tag>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column prop="course_label" label="课程标签" min-width="120" show-overflow-tooltip />
+
+              <el-table-column label="答案完整性" width="120">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="light" :type="qbAnswerCompletenessMeta(row).type">
+                    {{ qbAnswerCompletenessMeta(row).text }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="引用次数" width="96" align="center">
+                <template #default="{ row }">
+                  {{ Number(row.usage_count) || 0 }}
+                </template>
+              </el-table-column>
+
+              <el-table-column label="操作" min-width="300" align="right" fixed="right">
+                <template #default="{ row }">
+                  <div class="table-row-actions">
+                    <el-button type="primary" size="small" plain :icon="Edit" @click="openEdit(row)">编辑</el-button>
+                    <el-button size="small" plain :icon="View" @click="openPreview(row)">预览</el-button>
+                    <el-button size="small" plain :icon="List" @click="openUsage(row)">使用记录</el-button>
+                    <el-dropdown trigger="click" @command="(cmd) => handleMore(cmd, row)">
+                      <el-button size="small">
+                        更多
+                        <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="copy">复制题目</el-dropdown-item>
+                          <el-dropdown-item command="delete" divided>
+                            <span class="danger-text">删除</span>
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="pager-wrap">
+              <el-pagination
+                v-model:current-page="page"
+                :page-size="pageSize"
+                :total="displayTotal"
+                layout="total, prev, pager, next"
+                background
+                @current-change="onPageChange"
+              />
             </div>
-          </el-form-item>
-          <el-form-item v-if="form.type === 'single'" label="正确答案">
-            <el-radio-group v-model="ui.singleKey">
-              <el-radio v-for="r in validMcKeys" :key="r" :value="r">{{ r }}</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item v-else label="正确答案">
-            <el-checkbox-group v-model="ui.multiKeys">
-              <el-checkbox v-for="r in validMcKeys" :key="r" :value="r">{{ r }}</el-checkbox>
-            </el-checkbox-group>
-            <p class="form-hint">须勾选与标准答案数量一致的选项（顺序不限）。</p>
-          </el-form-item>
-        </template>
+          </template>
+        </div>
+      </section>
+    </template>
 
-        <!-- 判断 -->
-        <template v-else-if="form.type === 'judge'">
-          <el-form-item label="正确答案">
-            <el-radio-group v-model="ui.judgeOk">
-              <el-radio :value="true">对 / 正确</el-radio>
-              <el-radio :value="false">错 / 错误</el-radio>
-            </el-radio-group>
+    <!-- 新增 / 编辑 -->
+    <el-dialog
+      v-model="dlg"
+      :title="editId ? '编辑题目' : '新增题目'"
+      width="760px"
+      destroy-on-close
+      class="qb-form-dialog"
+      @closed="resetForm"
+    >
+      <el-form label-width="108px" class="qb-form">
+        <div class="form-section">
+          <h3 class="form-section__title">基本信息</h3>
+          <el-form-item label="题型">
+            <el-select v-model="form.type" style="width: 100%" @change="onTypeChange">
+              <el-option v-for="t in typeOpts" :key="t.v" :label="t.l" :value="t.v" />
+            </el-select>
           </el-form-item>
-        </template>
+          <el-form-item label="课程标签">
+            <el-input v-model="form.course_label" placeholder="如课程名或模块" />
+          </el-form-item>
+          <el-row :gutter="16">
+            <el-col :span="12">
+              <el-form-item label="分值">
+                <el-input-number v-model="form.default_score" :min="0.5" :max="100" :step="0.5" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="难度">
+                <el-select v-model="form.difficulty" style="width: 100%">
+                  <el-option label="易" value="easy" />
+                  <el-option label="中" value="medium" />
+                  <el-option label="难" value="hard" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="知识点">
+            <el-input v-model="form.knowledgeText" placeholder="逗号分隔多个标签" />
+          </el-form-item>
+        </div>
 
-        <!-- 填空 -->
-        <template v-else-if="form.type === 'fill'">
-          <el-form-item label="标准答案">
-            <el-input v-model="ui.fillPrimary" placeholder="主答案（必填）" />
+        <div class="form-section">
+          <h3 class="form-section__title">题目内容</h3>
+          <el-form-item label="题干">
+            <el-input v-model="form.stem" type="textarea" :rows="4" placeholder="请输入题目描述" />
           </el-form-item>
-          <el-form-item label="其它可接受">
-            <div class="opt-list">
-              <div v-for="(a, idx) in ui.fillAlts" :key="idx" class="opt-row">
-                <el-input v-model="ui.fillAlts[idx]" placeholder="等价表述（选填）" />
-                <el-button link type="danger" @click="removeFillAlt(idx)">删除</el-button>
+
+          <template v-if="form.type === 'single' || form.type === 'multi'">
+            <el-form-item label="选项">
+              <div class="opt-list">
+                <div v-for="(row, idx) in ui.mcOptions" :key="idx" class="opt-row">
+                  <el-input v-model="row.key" maxlength="4" class="opt-key" placeholder="键" />
+                  <el-input v-model="row.label" class="opt-label" placeholder="选项文字" />
+                  <el-button v-if="ui.mcOptions.length > 2" link type="danger" @click="removeMcOption(idx)">删除</el-button>
+                </div>
+                <el-button size="small" @click="addMcOption">添加选项</el-button>
               </div>
-              <el-button size="small" @click="ui.fillAlts.push('')">添加等价答案</el-button>
-            </div>
-          </el-form-item>
-          <el-form-item label="匹配规则">
-            <el-checkbox v-model="ui.fillIgnoreCase">忽略英文字母大小写</el-checkbox>
-          </el-form-item>
-        </template>
+            </el-form-item>
+            <el-form-item v-if="form.type === 'single'" label="正确答案">
+              <el-radio-group v-model="ui.singleKey">
+                <el-radio v-for="r in validMcKeys" :key="r" :value="r">{{ r }}</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item v-else label="正确答案">
+              <el-checkbox-group v-model="ui.multiKeys">
+                <el-checkbox v-for="r in validMcKeys" :key="r" :value="r">{{ r }}</el-checkbox>
+              </el-checkbox-group>
+              <p class="form-hint">须勾选与标准答案数量一致的选项（顺序不限）。</p>
+            </el-form-item>
+          </template>
 
-        <!-- 简答 -->
-        <template v-else-if="form.type === 'short'">
-          <el-form-item label="参考答案">
-            <el-input v-model="form.reference_answer" type="textarea" :rows="6" placeholder="评分时可对照的要点、关键词或范文片段" />
-          </el-form-item>
-        </template>
+          <template v-else-if="form.type === 'judge'">
+            <el-form-item label="正确答案">
+              <el-radio-group v-model="ui.judgeOk">
+                <el-radio :value="true">对 / 正确</el-radio>
+                <el-radio :value="false">错 / 错误</el-radio>
+              </el-radio-group>
+            </el-form-item>
+          </template>
 
-        <!-- 编程 -->
-        <template v-else-if="form.type === 'code'">
-          <el-form-item label="参考答案">
-            <el-input v-model="form.reference_answer" type="textarea" :rows="8" placeholder="思路说明、关键代码片段或评分要点" />
-          </el-form-item>
-          <el-form-item label="评分提示">
-            <el-input v-model="ui.codeHint" type="textarea" :rows="2" placeholder="可选：输入输出格式、语言版本等说明（写入答案 JSON 备注字段）" />
-          </el-form-item>
-        </template>
+          <template v-else-if="form.type === 'fill'">
+            <el-form-item label="标准答案">
+              <el-input v-model="ui.fillPrimary" placeholder="主答案（必填）" />
+            </el-form-item>
+            <el-form-item label="其它可接受">
+              <div class="opt-list">
+                <div v-for="(a, idx) in ui.fillAlts" :key="idx" class="opt-row">
+                  <el-input v-model="ui.fillAlts[idx]" placeholder="等价表述（选填）" />
+                  <el-button link type="danger" @click="removeFillAlt(idx)">删除</el-button>
+                </div>
+                <el-button size="small" @click="ui.fillAlts.push('')">添加等价答案</el-button>
+              </div>
+            </el-form-item>
+            <el-form-item label="匹配规则">
+              <el-checkbox v-model="ui.fillIgnoreCase">忽略英文字母大小写</el-checkbox>
+            </el-form-item>
+          </template>
+        </div>
 
-        <el-form-item v-if="form.type !== 'short' && form.type !== 'code'" label="参考答案">
-          <el-input v-model="form.reference_answer" type="textarea" :rows="2" placeholder="可选：解析或扩展说明" />
-        </el-form-item>
+        <div class="form-section">
+          <h3 class="form-section__title">答案与解析</h3>
+          <template v-if="form.type === 'short'">
+            <el-form-item label="参考答案">
+              <el-input v-model="form.reference_answer" type="textarea" :rows="6" placeholder="评分时可对照的要点、关键词或范文片段" />
+            </el-form-item>
+          </template>
+          <template v-else-if="form.type === 'code'">
+            <el-form-item label="参考代码">
+              <el-input v-model="form.reference_answer" type="textarea" :rows="8" placeholder="思路说明、关键代码片段或评分要点" />
+            </el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item label="解析说明">
+              <el-input v-model="form.reference_answer" type="textarea" :rows="3" placeholder="可选：解析或评分要点说明" />
+            </el-form-item>
+          </template>
+        </div>
 
-        <el-form-item label="分值">
-          <el-input-number v-model="form.default_score" :min="0.5" :max="100" :step="0.5" />
-        </el-form-item>
-        <el-form-item label="难度">
-          <el-select v-model="form.difficulty" style="width: 160px">
-            <el-option label="易" value="easy" />
-            <el-option label="中" value="medium" />
-            <el-option label="难" value="hard" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="课程">
-          <el-input v-model="form.course_label" placeholder="如课程名或模块" />
-        </el-form-item>
-        <el-form-item label="知识点">
-          <el-input v-model="form.knowledgeText" placeholder="逗号分隔多个标签" />
-        </el-form-item>
+        <div v-if="form.type === 'code'" class="form-section">
+          <h3 class="form-section__title">编程题配置</h3>
+          <el-form-item label="语言 / 说明">
+            <el-input v-model="ui.codeHint" type="textarea" :rows="2" placeholder="输入输出格式、语言版本等说明" />
+          </el-form-item>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="dlg = false">取消</el-button>
@@ -178,12 +297,19 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="usageDlg" title="题目使用记录" width="520px">
+    <!-- 预览 -->
+    <el-dialog v-model="previewDlg" title="题目预览" width="720px" destroy-on-close>
+      <QbQuestionPreview v-if="previewQuestion" :question="previewQuestion" />
+    </el-dialog>
+
+    <!-- 使用记录 -->
+    <el-dialog v-model="usageDlg" title="题目使用记录" width="560px" destroy-on-close>
       <el-table :data="usageRows" size="small" border>
-        <el-table-column prop="ref_type" label="类型" width="100" />
-        <el-table-column prop="ref_id" label="关联ID" width="88" />
-        <el-table-column prop="ref_title" label="标题" show-overflow-tooltip />
-        <el-table-column label="时间" width="178">
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">{{ refTypeLabel(row.ref_type) }}</template>
+        </el-table-column>
+        <el-table-column prop="ref_title" label="标题" min-width="160" show-overflow-tooltip />
+        <el-table-column label="时间" width="168">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
@@ -204,21 +330,15 @@ import {
   importQuestions,
 } from '../../api/qb'
 import { qbDifficultyLabel, qbDifficultyTagType, qbTypeLabel } from '../../utils/qbLabels'
+import {
+  qbStemSummary,
+  qbAnswerCompletenessMeta,
+  isThisMonth,
+} from '../../utils/qbQuestionQuality'
 import { formatDateTime } from '../../utils/format'
-
-const loading = ref(false)
-const importing = ref(false)
-const rows = ref([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
-const keyword = ref('')
-const filterType = ref('')
-const dlg = ref(false)
-const saving = ref(false)
-const editId = ref(null)
-const usageDlg = ref(false)
-const usageRows = ref([])
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Edit, List, View, Search, Plus, ArrowDown } from '@element-plus/icons-vue'
+import QbQuestionPreview from '../../components/qb/QbQuestionPreview.vue'
 
 const typeOpts = [
   { v: 'single', l: '单选' },
@@ -228,6 +348,26 @@ const typeOpts = [
   { v: 'short', l: '简答' },
   { v: 'code', l: '编程' },
 ]
+
+const loading = ref(false)
+const initialLoading = ref(true)
+const importing = ref(false)
+const rows = ref([])
+const statRows = ref([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const keyword = ref('')
+const filterType = ref('')
+const filterDifficulty = ref('')
+const filterCourse = ref('')
+const dlg = ref(false)
+const saving = ref(false)
+const editId = ref(null)
+const usageDlg = ref(false)
+const usageRows = ref([])
+const previewDlg = ref(false)
+const previewQuestion = ref(null)
 
 const form = ref({
   type: 'single',
@@ -239,7 +379,6 @@ const form = ref({
   knowledgeText: '',
 })
 
-/** 题型专用 UI 状态（保存时转换为 JSON） */
 const ui = ref({
   mcOptions: defaultMcOptions(),
   singleKey: 'A',
@@ -274,6 +413,55 @@ const validMcKeys = computed(() => {
   const keys = ui.value.mcOptions.map((r) => String(r.key || '').trim()).filter(Boolean)
   return [...new Set(keys)]
 })
+
+const courseOptions = computed(() => {
+  const set = new Set(statRows.value.map((r) => r.course_label).filter(Boolean))
+  return [...set].sort()
+})
+
+const needsClientFilter = computed(() => !!filterDifficulty.value || !!filterCourse.value)
+
+const filteredRows = computed(() => {
+  let list = needsClientFilter.value ? [...(statRows.value || [])] : [...(rows.value || [])]
+  if (filterDifficulty.value) list = list.filter((r) => r.difficulty === filterDifficulty.value)
+  if (filterCourse.value) list = list.filter((r) => r.course_label === filterCourse.value)
+  return list
+})
+
+const displayTotal = computed(() => (needsClientFilter.value ? filteredRows.value.length : total.value))
+
+const pagedRows = computed(() => {
+  if (needsClientFilter.value) {
+    const start = (page.value - 1) * pageSize.value
+    return filteredRows.value.slice(start, start + pageSize.value)
+  }
+  return filteredRows.value
+})
+
+const hasActiveFilters = computed(
+  () => !!keyword.value.trim() || !!filterType.value || !!filterDifficulty.value || !!filterCourse.value
+)
+
+const overviewCards = computed(() => {
+  const snap = statRows.value.length ? statRows.value : rows.value
+  const objective = snap.filter((r) => ['single', 'multi', 'judge', 'fill'].includes(r.type)).length
+  const code = snap.filter((r) => r.type === 'code').length
+  const referenced = snap.filter((r) => (Number(r.usage_count) || 0) > 0).length
+  const monthNew = snap.filter((r) => isThisMonth(r.created_at)).length
+  return [
+    { key: 'all', label: '我的题目', value: total.value || snap.length, icon: List, tone: 'slate' },
+    { key: 'code', label: '编程题', value: code, icon: Edit, tone: 'teal' },
+    { key: 'obj', label: '客观题', value: objective, icon: View, tone: 'blue' },
+    { key: 'ref', label: '已被组卷引用', value: referenced, icon: List, tone: 'violet' },
+    { key: 'month', label: '本月新增', value: monthNew, icon: Plus, tone: 'orange' },
+  ]
+})
+
+function refTypeLabel(t) {
+  if (t === 'practice') return '习题练习'
+  if (t === 'exam') return '在线考试'
+  return t || '—'
+}
 
 function addMcOption() {
   const used = new Set(ui.value.mcOptions.map((r) => String(r.key || '').trim().toUpperCase()))
@@ -316,7 +504,6 @@ function parseKnowledgeTags(d) {
   return ''
 }
 
-/** 从后端题目填充 UI */
 function hydrateUiFromQuestion(d) {
   const opts = d.options_json
   const ans = typeof d.answer_json === 'object' && d.answer_json ? d.answer_json : {}
@@ -415,22 +602,62 @@ function buildPayloadJson() {
   throw new Error('未知题型')
 }
 
-const load = async () => {
-  loading.value = true
+async function loadStatSnapshot() {
   try {
-    const res = await listQuestions({
-      page: page.value,
-      pageSize: pageSize.value,
+    const params = {
+      page: 1,
+      pageSize: Math.min(Math.max(total.value, 20), 500),
       q: keyword.value.trim() || undefined,
       type: filterType.value || undefined,
-    })
-    if (res.success) {
-      rows.value = res.data || []
-      total.value = res.total ?? 0
+    }
+    const res = await listQuestions(params)
+    if (res.success) statRows.value = res.data || []
+  } catch {
+    statRows.value = rows.value
+  }
+}
+
+async function load() {
+  loading.value = true
+  try {
+    if (needsClientFilter.value) {
+      await loadStatSnapshot()
+      rows.value = statRows.value
+    } else {
+      const res = await listQuestions({
+        page: page.value,
+        pageSize: pageSize.value,
+        q: keyword.value.trim() || undefined,
+        type: filterType.value || undefined,
+      })
+      if (res.success) {
+        rows.value = res.data || []
+        total.value = res.total ?? 0
+      }
+      await loadStatSnapshot()
     }
   } finally {
     loading.value = false
   }
+}
+
+function applySearch() {
+  page.value = 1
+  load()
+}
+
+function onPageChange(p) {
+  page.value = p
+  if (!needsClientFilter.value) load()
+}
+
+function resetFilters() {
+  keyword.value = ''
+  filterType.value = ''
+  filterDifficulty.value = ''
+  filterCourse.value = ''
+  page.value = 1
+  load()
 }
 
 const resetForm = () => {
@@ -452,26 +679,52 @@ const openCreate = () => {
   dlg.value = true
 }
 
+const fillFormFromQuestion = (d, asCopy = false) => {
+  editId.value = asCopy ? null : d.id
+  form.value = {
+    type: d.type,
+    stem: asCopy ? `${d.stem}（副本）` : d.stem,
+    reference_answer: d.reference_answer || '',
+    default_score: Number(d.default_score) || 5,
+    difficulty: d.difficulty || 'medium',
+    course_label: d.course_label || '',
+    knowledgeText: parseKnowledgeTags(d),
+  }
+  Object.assign(ui.value, defaultUiForType(d.type))
+  hydrateUiFromQuestion(d)
+}
+
 const openEdit = async (row) => {
   try {
     const res = await getQuestion(row.id)
     if (!res.success) return
-    const d = res.data
-    editId.value = d.id
-    form.value = {
-      type: d.type,
-      stem: d.stem,
-      reference_answer: d.reference_answer || '',
-      default_score: Number(d.default_score) || 5,
-      difficulty: d.difficulty || 'medium',
-      course_label: d.course_label || '',
-      knowledgeText: parseKnowledgeTags(d),
-    }
-    Object.assign(ui.value, defaultUiForType(d.type))
-    hydrateUiFromQuestion(d)
+    fillFormFromQuestion(res.data)
     dlg.value = true
   } catch {
     ElMessage.error('加载题目失败')
+  }
+}
+
+const openPreview = async (row) => {
+  try {
+    const res = await getQuestion(row.id)
+    if (res.success) {
+      previewQuestion.value = res.data
+      previewDlg.value = true
+    }
+  } catch {
+    ElMessage.error('加载预览失败')
+  }
+}
+
+const copyQuestion = async (row) => {
+  try {
+    const res = await getQuestion(row.id)
+    if (!res.success) return
+    fillFormFromQuestion(res.data, true)
+    dlg.value = true
+  } catch {
+    ElMessage.error('复制失败')
   }
 }
 
@@ -585,7 +838,11 @@ const openUsage = async (row) => {
 
 const remove = async (row) => {
   try {
-    await ElMessageBox.confirm('确定删除该题目？（软删除，已引用题目删除后不影响历史试卷结构）', '确认', { type: 'warning' })
+    await ElMessageBox.confirm(
+      '确定删除该题目？（软删除，已引用题目删除后不影响历史试卷结构）',
+      '确认删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
     await deleteQuestion(row.id)
     ElMessage.success('已删除')
     load()
@@ -594,70 +851,125 @@ const remove = async (row) => {
   }
 }
 
-onMounted(load)
+const handleMore = (cmd, row) => {
+  if (cmd === 'copy') copyQuestion(row)
+  else if (cmd === 'delete') remove(row)
+}
+
+onMounted(async () => {
+  try {
+    await load()
+  } finally {
+    initialLoading.value = false
+  }
+})
 </script>
 
 <style scoped>
-.page-qb {
+.teacher-qb-page {
   max-width: 1400px;
 }
-.page-head {
-  margin-bottom: 16px;
+
+.tw-filter-bar {
+  padding: 16px 18px;
 }
-.page-title {
-  margin: 0 0 6px;
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--sg-text);
+
+.filter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
 }
-.page-desc {
-  margin: 0;
-  font-size: 14px;
-  color: var(--sg-text-secondary);
-}
-.panel-card {
-  border-radius: var(--sg-radius-lg);
-  border: 1px solid var(--sg-border);
-}
-.toolbar-row {
+
+.filter-toolbar__filters,
+.filter-toolbar__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
 }
-.search-inp {
+
+.filter-toolbar__search {
   width: 220px;
 }
+
+.filter-toolbar__select {
+  width: 132px;
+}
+
+.info-cell__title {
+  display: block;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.info-cell__sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.score-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+
 .pager-wrap {
-  margin-top: 16px;
+  padding: 16px 18px;
   display: flex;
   justify-content: flex-end;
 }
+
+.form-section {
+  margin-bottom: 20px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.form-section:last-child {
+  border-bottom: none;
+}
+
+.form-section__title {
+  margin: 0 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+}
+
 .opt-list {
   width: 100%;
 }
+
 .opt-row {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
 }
+
 .opt-key {
   width: 72px;
   flex-shrink: 0;
 }
+
 .opt-label {
   flex: 1;
   min-width: 0;
 }
+
 .form-hint {
   margin: 6px 0 0;
   font-size: 12px;
-  color: var(--sg-text-secondary);
+  color: #64748b;
 }
-.data-table :deep(.col-id) {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  color: var(--sg-text-secondary);
+
+.danger-text {
+  color: #dc2626;
 }
 </style>

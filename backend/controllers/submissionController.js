@@ -12,10 +12,34 @@ const {
   studentCanAccessTask,
   teacherOwnsTaskForGrading,
   teacherOwnsSubmissionTask,
+  teacherTaskVisibilityWhere,
+  teacherTaskVisibilityParams,
   enterpriseCanAccessTask,
   enterpriseOwnsSubmissionTask,
 } = require("../utils/accessControl");
 const { computeTaskSimilarityForSubmission } = require("../utils/similarity");
+const {
+  enhanceExtractedTextIfImage,
+  appendZipImagesVlRecognition,
+  persistVlRecognition,
+} = require("../services/vlRecognitionService");
+const { enqueueSubmissionCodeRun } = require("../services/codeRunSubmissionService");
+const {
+  evaluateSubmissionUpload,
+} = require("../services/contentSafetyService");
+const {
+  validateSubmitInput,
+  processAllFiles,
+  buildAttachmentParseBlocks,
+  buildMergedContent,
+  computeSubmissionCodeHash,
+  assertCodeRunBeforeSubmit,
+  insertAttachments,
+  deleteBySubmissionId,
+} = require("../services/submissionSubmitService");
+const { listAttachmentsForSubmission, getAttachmentById } = require("../services/submissionAttachmentService");
+const { ensureSubmissionCodeRunLinked } = require("../services/codeRunSubmissionService");
+const { studentWrittenDescriptionOnly } = require("../utils/submissionContentBuild");
 
 async function pushSubmissionRt(taskId, studentId, submissionId, phase, extra) {
   try {
@@ -83,195 +107,127 @@ async function mergeExtractedContent(
   fileType,
   fileName,
   textContent,
+  progressMeta,
 ) {
-  const extracted = filePath
+  let extracted = filePath
     ? await extractTextFromFile(filePath, fileType, fileName)
     : "";
+  let vlResult = { status: "skipped" };
+  if (filePath) {
+    const enhanced = await enhanceExtractedTextIfImage(
+      filePath,
+      fileType,
+      fileName,
+      extracted,
+      progressMeta,
+    );
+    extracted = enhanced.text;
+    vlResult = enhanced.vl || vlResult;
+  }
   const base = (textContent || "").trim();
+  let merged;
   if (extracted && base) {
-    return `${base}\n\n${ATTACHMENT_PARSE_MARKER}\n${extracted}`;
+    merged = `${base}\n\n${ATTACHMENT_PARSE_MARKER}\n${extracted}`;
+  } else if (extracted) {
+    merged = `\n\n${ATTACHMENT_PARSE_MARKER}\n${extracted}`;
+  } else {
+    merged = base;
   }
-  if (extracted) {
-    return `\n\n${ATTACHMENT_PARSE_MARKER}\n${extracted}`;
-  }
-  return base;
+  return { mergedContent: merged, vlResult };
 }
+
+const { handleSubmitAssignment } = require("../services/submissionSubmitHandler");
 
 const submitAssignment = async (req, res) => {
   try {
-    const { taskId, content } = req.body;
-    const studentId = req.user.id;
+    await handleSubmitAssignment(req, res, { pushSubmissionRt });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "提交失败", error: error.message });
+  }
+};
 
-    if (taskId === undefined || taskId === null || String(taskId).trim() === "") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "缺少任务 ID（taskId），请确认表单以 multipart 正确提交",
-        });
+/** 教师成果批改工作台：汇总本人发布任务下的全部提交 */
+const getTeacherGradingWorkbench = async (req, res) => {
+  try {
+    if (req.user.role !== "teacher") {
+      return res.status(403).json({ success: false, message: "仅教师可访问" });
+    }
+    const teacherId = req.user.id;
+    const statusFilter = String(req.query.status || "all").toLowerCase();
+
+    let statusClause = "";
+    if (statusFilter === "pending") {
+      statusClause =
+        " AND (gr.status IS NULL OR gr.status IN ('pending', 'ai_graded', 'human_graded'))";
+    } else if (statusFilter === "graded") {
+      statusClause =
+        " AND gr.status IN ('human_reviewed', 'human_graded', 'completed')";
     }
 
-    const ok = await studentCanAccessTask(studentId, taskId);
-    if (!ok) {
-      return res.status(403).json({ success: false, message: "无权向该任务提交作业" });
+    const params = [...teacherTaskVisibilityParams(teacherId)];
+    let extra = "";
+    const taskId = req.query.taskId ? Number(req.query.taskId) : null;
+    if (taskId) {
+      extra += " AND t.id = ?";
+      params.push(taskId);
+    }
+    const teachingClassId = req.query.teachingClassId
+      ? Number(req.query.teachingClassId)
+      : null;
+    if (teachingClassId) {
+      extra += " AND t.teaching_class_id = ?";
+      params.push(teachingClassId);
+    }
+    const courseId = req.query.courseId ? Number(req.query.courseId) : null;
+    if (courseId) {
+      extra += " AND t.course_id = ?";
+      params.push(courseId);
     }
 
-    const [deadRows] = await pool.query(`SELECT deadline, max_submissions FROM tasks WHERE id = ?`, [taskId]);
-    if (!deadRows.length) {
-      return res.status(404).json({ success: false, message: "任务不存在" });
-    }
-    const maxSubmissions = normalizeMaxSubmissions(deadRows[0].max_submissions);
-    if (deadRows[0].deadline) {
-      const dl = new Date(deadRows[0].deadline);
-      if (!Number.isNaN(dl.getTime()) && Date.now() > dl.getTime()) {
-        return res.status(403).json({
-          success: false,
-          message: "已超过提交截止时间，无法提交或修改作业",
-        });
-      }
-    }
-
-    let filePath = null;
-    let fileName = null;
-    let fileType = null;
-    let archiveExtractedText = null;
-    let archiveExtractedFileCount = null;
-
-    if (req.file) {
-      filePath = req.file.path;
-      fileName = decodeMultipartFilename(req.file.originalname);
-      fileType = req.file.mimetype;
-    }
-
-    let mergedContent;
-    if (req.file && isZipSubmission(fileName, fileType)) {
-      let zr;
-      try {
-        zr = await extractSafeZipArchive(filePath, fileName);
-      } catch (e) {
-        console.error("zip extract error:", e.message);
-        zr = {
-          ok: false,
-          message: "压缩包处理异常，请稍后重试或改为上传单个文件",
-        };
-      }
-      if (!zr.ok) {
-        try {
-          if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        } catch (_) {}
-        return res.status(400).json({ success: false, message: zr.message });
-      }
-      archiveExtractedText =
-        zr.text && String(zr.text).trim() ? String(zr.text).trim() : null;
-      archiveExtractedFileCount = Number.isFinite(zr.fileCount) ? zr.fileCount : 0;
-      const base = (content || "").trim();
-      const zipNote =
-        archiveExtractedFileCount > 0
-          ? `（已上传源码压缩包 .zip，系统已解析 ${archiveExtractedFileCount} 个文本类文件供 AI 批改）`
-          : `（已上传压缩包，未解析到允许的文本类文件；请将源码保存为允许的后缀或补充文字说明）`;
-      mergedContent = base
-        ? `${base}\n\n${ATTACHMENT_PARSE_MARKER}\n${zipNote}`
-        : `${ATTACHMENT_PARSE_MARKER}\n${zipNote}`;
-    } else {
-      mergedContent = await mergeExtractedContent(filePath, fileType, fileName, content);
-    }
-
-    const [existing] = await pool.query(
-      "SELECT id, revised_count, file_path FROM submissions WHERE task_id = ? AND student_id = ?",
-      [taskId, studentId],
+    const [rows] = await pool.query(
+      `
+      SELECT s.id AS submission_id, s.task_id, s.student_id, s.file_name, s.submitted_at,
+             s.is_revised, s.max_similarity, s.similarity_level,
+             u.real_name AS student_name,
+             t.title AS task_title, t.deadline AS task_deadline,
+             t.class_id, t.teaching_class_id, t.course_id,
+             c.class_name,
+             tc.class_name AS teaching_class_name,
+             co.course_name,
+             tm.name AS term_name,
+             gr.total_score, gr.final_score, gr.human_score, gr.status AS grading_status
+      FROM submissions s
+      INNER JOIN tasks t ON s.task_id = t.id
+      INNER JOIN users u ON s.student_id = u.id
+      LEFT JOIN classes c ON t.class_id = c.id
+      LEFT JOIN teaching_classes tc ON t.teaching_class_id = tc.id
+      LEFT JOIN terms tm ON tc.term_id = tm.id
+      LEFT JOIN courses co ON t.course_id = co.id
+      LEFT JOIN grading_results gr ON gr.submission_id = s.id
+      WHERE ${teacherTaskVisibilityWhere("t")}${extra}${statusClause}
+      ORDER BY s.submitted_at DESC
+      LIMIT 500
+    `,
+      params
     );
 
-    if (existing.length > 0) {
-      const usedCount = Number(existing[0].revised_count) + 1;
-      if (usedCount >= maxSubmissions) {
-        return res.status(403).json({
-          success: false,
-          message: "已达到最大提交次数，无法再次提交",
-        });
-      }
-      if (existing[0].file_path) {
-        try {
-          if (fs.existsSync(existing[0].file_path)) {
-            fs.unlinkSync(existing[0].file_path);
-          }
-        } catch (e) {}
-      }
-
-      await pool.query(
-        "UPDATE submissions SET file_path = ?, file_name = ?, file_type = ?, content = ?, archive_extracted_text = ?, archive_extracted_file_count = ?, is_revised = 1, revised_count = revised_count + 1, submitted_at = NOW() WHERE id = ?",
-        [
-          filePath,
-          fileName,
-          fileType,
-          mergedContent,
-          archiveExtractedText,
-          archiveExtractedFileCount,
-          existing[0].id,
-        ],
-      );
-
-      await refreshSimilarityForTask(pool, taskId, existing[0].id);
-
-      try {
-        const [trow] = await pool.query(
-          "SELECT class_id, created_by FROM tasks WHERE id = ? LIMIT 1",
-          [taskId]
-        );
-        if (trow.length) {
-          await cache.invalidateAfterSubmission(taskId, trow[0].class_id, trow[0].created_by);
-        }
-      } catch {
-        /* ignore cache */
-      }
-      const body = { success: true, message: "作业已修改提交" };
-      if (archiveExtractedFileCount != null) {
-        body.archiveExtractedFileCount = archiveExtractedFileCount;
-      }
-      res.json(body);
-      void pushSubmissionRt(taskId, studentId, existing[0].id, "revised", body);
-    } else {
-      const [result] = await pool.query(
-        "INSERT INTO submissions (task_id, student_id, file_path, file_name, file_type, content, archive_extracted_text, archive_extracted_file_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-          taskId,
-          studentId,
-          filePath,
-          fileName,
-          fileType,
-          mergedContent,
-          archiveExtractedText,
-          archiveExtractedFileCount,
-        ],
-      );
-
-      await refreshSimilarityForTask(pool, taskId, result.insertId);
-
-      try {
-        const [trow] = await pool.query(
-          "SELECT class_id, created_by FROM tasks WHERE id = ? LIMIT 1",
-          [taskId]
-        );
-        if (trow.length) {
-          await cache.invalidateAfterSubmission(taskId, trow[0].class_id, trow[0].created_by);
-        }
-      } catch {
-        /* ignore cache */
-      }
-      const created = {
-        success: true,
-        message: "作业提交成功",
-        submissionId: result.insertId,
-      };
-      if (archiveExtractedFileCount != null) {
-        created.archiveExtractedFileCount = archiveExtractedFileCount;
-      }
-      res.status(201).json(created);
-      void pushSubmissionRt(taskId, studentId, result.insertId, "created", created);
-    }
+    res.json({
+      success: true,
+      data: rows.map((r) => {
+        const mapped = mapSubmissionFileName({ file_name: r.file_name });
+        return {
+          ...r,
+          file_name: mapped.file_name || r.file_name,
+          audience_label: r.teaching_class_name || r.class_name || "—",
+        };
+      }),
+    });
   } catch (error) {
-    res
-      .status(500)
-      .json({ success: false, message: "提交失败", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "获取成果批改工作台失败",
+      error: error.message,
+    });
   }
 };
 
@@ -282,7 +238,7 @@ const getSubmissionsByTask = async (req, res) => {
     if (req.user.role === "teacher") {
       const task = await teacherOwnsTaskForGrading(req.user.id, taskId);
       if (!task) {
-        return res.status(404).json({ success: false, message: "任务不存在或无权查看" });
+        return res.status(403).json({ success: false, message: "无权查看该任务提交" });
       }
     } else if (req.user.role === "enterprise") {
       const task = await enterpriseCanAccessTask(req.user.id, taskId);
@@ -293,10 +249,22 @@ const getSubmissionsByTask = async (req, res) => {
 
     const [submissions] = await pool.query(
       `
-      SELECT s.id, s.task_id, s.student_id, s.file_name, s.file_type, s.submitted_at, 
+      SELECT s.id, s.task_id, s.student_id, s.file_name, s.file_type, s.submitted_at,
              s.is_revised, s.revised_count, s.max_similarity, s.similarity_level, s.similarity_pairs,
-             u.real_name as student_name, u.class_id,
-             c.class_name, gr.total_score, gr.final_score, gr.human_score, gr.status
+             s.code_run_summary, s.safety_status, s.safety_reason,
+             u.real_name as student_name, u.username, u.student_no, u.class_id,
+             c.class_name, gr.total_score, gr.final_score, gr.human_score, gr.status,
+             gr.enterprise_score, gr.enterprise_graded_at,
+             (
+               SELECT i.status
+               FROM grading_job_items i
+               INNER JOIN grading_jobs j ON j.id = i.job_id
+               WHERE i.submission_id = s.id
+                 AND i.status IN ('pending', 'queued', 'running')
+                 AND j.status IN ('pending', 'running')
+               ORDER BY i.id DESC
+               LIMIT 1
+             ) AS active_grading_item_status
       FROM submissions s
       LEFT JOIN users u ON s.student_id = u.id
       LEFT JOIN classes c ON u.class_id = c.id
@@ -306,9 +274,31 @@ const getSubmissionsByTask = async (req, res) => {
     `,
       [taskId],
     );
+    const [taskMeta] = await pool.query('SELECT code_run_enabled FROM tasks WHERE id = ? LIMIT 1', [taskId]);
+    const codeRunEnabled = Boolean(Number(taskMeta[0]?.code_run_enabled));
+    const { attachListEligibilityFields } = require('../utils/submissionAiBatchEligibility');
+    const { getFeedbackSummaryForSubmissions } = require('../services/submissionResubmitService');
+
+    const submissionIds = submissions.map((r) => Number(r.id)).filter(Boolean);
+    const feedbackMap = await getFeedbackSummaryForSubmissions(submissionIds);
+
     res.json({
       success: true,
-      data: submissions.map(mapSubmissionFileName),
+      data: submissions.map((row) => {
+        const mapped = mapSubmissionFileName(row);
+        const fb = feedbackMap.get(Number(mapped.id)) || {};
+        return attachListEligibilityFields(
+          {
+            ...mapped,
+            grading_status: mapped.status,
+            active_item_status: mapped.active_grading_item_status,
+            feedbackStatus: fb.feedbackStatus || null,
+            feedbackCount: fb.feedbackCount || 0,
+            latestFeedbackId: fb.latestFeedbackId || null,
+          },
+          codeRunEnabled
+        );
+      }),
     });
   } catch (error) {
     res
@@ -321,15 +311,155 @@ const getSubmissionsByTask = async (req, res) => {
   }
 };
 
+async function enrichSubmissionDetail(row, req) {
+  const { studentWrittenDescriptionOnly } = require('../utils/submissionContentBuild');
+  if (row.task_code_run_enabled) {
+    await ensureSubmissionCodeRunLinked(row.id);
+    const [cr] = await pool.query(
+      'SELECT code_run_result_id, code_run_summary, code_run_bound_hash FROM submissions WHERE id = ?',
+      [row.id]
+    );
+    if (cr[0]) Object.assign(row, cr[0]);
+  }
+  const data = mapSubmissionFileName({ ...row });
+  data.submission_text =
+    row.submission_text != null && String(row.submission_text).trim()
+      ? row.submission_text
+      : studentWrittenDescriptionOnly(row.content);
+  data.code_content = row.code_content || null;
+  data.code_language = row.code_language || null;
+  data.attachments = await listAttachmentsForSubmission(row);
+
+  if (data.vl_recognition_meta && typeof data.vl_recognition_meta === 'string') {
+    try {
+      data.vl_recognition_meta = JSON.parse(data.vl_recognition_meta);
+    } catch {
+      data.vl_recognition_meta = null;
+    }
+  }
+  const tmax = normalizeMaxSubmissions(data.task_max_submissions);
+  data.task_max_submissions = tmax;
+  data.submit_used_count = Number(data.revised_count) + 1;
+
+  if (data.task_code_run_enabled) {
+    const { loadSubmissionCodeRunContext } = require('../utils/codeRunWorkText');
+    const { parseTaskCodeRunConfig } = require('../utils/taskCodeRunConfig');
+    const ctx = await loadSubmissionCodeRunContext(row.id);
+    const cfg = ctx ? parseTaskCodeRunConfig(ctx.code_run_config) : null;
+    data.codeRun = {
+      enabled: true,
+      summary: ctx?.result_summary || ctx?.code_run_summary || row.code_run_summary,
+      resultId: ctx?.code_run_result_id || row.code_run_result_id,
+      status: ctx?.job_status || (row.code_run_summary === '排队中…' ? 'pending' : null),
+      language: ctx?.job_language || ctx?.code_run_language || data.code_language,
+      gradeAfterRun: cfg?.gradeAfterRun ?? false,
+      runRequired: cfg?.runRequired ?? false,
+      codeRunBoundHash: row.code_run_bound_hash || null,
+    };
+    if (ctx?.code_run_result_id) {
+      data.codeRun.result = {
+        compileExitCode: ctx.compile_exit_code,
+        runExitCode: ctx.run_exit_code,
+        compileLog: ctx.compile_log,
+        stdout: ctx.stdout,
+        stderr: ctx.stderr,
+        timedOut: Boolean(ctx.timed_out),
+        durationMs: ctx.duration_ms,
+        entryFileFound: Boolean(ctx.entry_file_found),
+        summary: ctx.result_summary || data.code_run_summary,
+      };
+    }
+  }
+
+  if (req.user.role === 'student') {
+    delete data.safety_reason;
+  }
+  return data;
+}
+
+const getMySubmissionByTask = async (req, res) => {
+  try {
+    const taskId = req.params.taskId;
+    const studentId = req.user.id;
+    const ok = await studentCanAccessTask(studentId, taskId);
+    if (!ok) return res.status(403).json({ success: false, message: '无权查看该任务' });
+
+    const [rows] = await pool.query(
+      `
+      SELECT s.*, t.title AS task_title, t.deadline AS task_deadline,
+             t.max_submissions AS task_max_submissions, t.code_run_enabled AS task_code_run_enabled,
+             t.code_run_language, t.code_run_config,
+             u.real_name AS student_name,
+             gr.total_score, gr.human_score, gr.final_score, gr.status AS grading_status,
+             gr.ai_comment, gr.human_comment, gr.enterprise_score, gr.enterprise_comment
+      FROM submissions s
+      INNER JOIN tasks t ON t.id = s.task_id
+      LEFT JOIN users u ON u.id = s.student_id
+      LEFT JOIN grading_results gr ON gr.submission_id = s.id
+      WHERE s.task_id = ? AND s.student_id = ?
+      LIMIT 1
+    `,
+      [taskId, studentId]
+    );
+    if (!rows.length) {
+      return res.json({ success: true, data: null });
+    }
+    const data = await enrichSubmissionDetail(rows[0], req);
+    data.task_title = rows[0].task_title;
+    data.task_deadline = rows[0].task_deadline;
+    data.grading = {
+      totalScore: rows[0].total_score,
+      humanScore: rows[0].human_score,
+      finalScore: rows[0].final_score,
+      status: rows[0].grading_status,
+      aiComment: rows[0].ai_comment,
+      humanComment: rows[0].human_comment,
+      enterpriseScore: rows[0].enterprise_score,
+      enterpriseComment: rows[0].enterprise_comment,
+    };
+    const dl = rows[0].task_deadline ? new Date(rows[0].task_deadline) : null;
+    data.is_late =
+      dl && !Number.isNaN(dl.getTime()) && rows[0].submitted_at
+        ? new Date(rows[0].submitted_at).getTime() > dl.getTime()
+        : false;
+    const { loadActiveResubmitPermission } = require('../services/submissionResubmitService');
+    const perm = await loadActiveResubmitPermission({
+      taskId,
+      studentId,
+      submissionId: rows[0].id,
+    });
+    data.resubmit_permission = perm
+      ? {
+          id: perm.id,
+          expireAt: perm.expire_at,
+          extraAttempts: perm.extra_attempts,
+          usedAttempts: perm.used_attempts,
+          reason: perm.reason,
+        }
+      : null;
+    data.resubmit_status = rows[0].resubmit_status || 'normal';
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取提交详情失败', error: error.message });
+  }
+};
+
 const getSubmissionById = async (req, res) => {
   try {
     const [submissions] = await pool.query(
       `
-      SELECT s.id, s.task_id, s.student_id, s.file_path, s.file_name, s.file_type, 
-             s.content, s.archive_extracted_file_count, s.submitted_at, s.is_revised, s.revised_count,
+      SELECT s.id, s.task_id, s.student_id, s.file_path, s.file_name, s.file_type,
+             s.content, s.submission_text, s.code_content, s.code_language, s.code_run_bound_hash,
+             s.archive_extracted_file_count, s.submitted_at, s.is_revised, s.revised_count,
+             s.vl_recognition_status, s.vl_recognition_text, s.vl_recognition_meta,
+             s.vl_recognition_error, s.vl_recognition_at,
              s.max_similarity, s.similarity_level, s.similarity_pairs,
+             s.code_run_result_id, s.code_run_summary,
+             s.safety_status, s.safety_reason, s.safety_checked_at, s.file_hash,
+             s.resubmit_status, s.version,
              u.real_name as student_name,
-             t.max_submissions AS task_max_submissions
+             t.max_submissions AS task_max_submissions,
+             t.code_run_enabled AS task_code_run_enabled, t.title AS task_title, t.deadline AS task_deadline
       FROM submissions s
       LEFT JOIN users u ON s.student_id = u.id
       LEFT JOIN tasks t ON s.task_id = t.id
@@ -364,10 +494,23 @@ const getSubmissionById = async (req, res) => {
       }
     }
 
-    const data = mapSubmissionFileName({ ...row });
-    const tmax = normalizeMaxSubmissions(data.task_max_submissions);
-    data.task_max_submissions = tmax;
-    data.submit_used_count = Number(data.revised_count) + 1;
+    const data = await enrichSubmissionDetail(row, req);
+    const { loadActiveResubmitPermission } = require('../services/submissionResubmitService');
+    const perm = await loadActiveResubmitPermission({
+      taskId: row.task_id,
+      studentId: row.student_id,
+      submissionId: row.id,
+    });
+    data.resubmit_permission = perm
+      ? {
+          id: perm.id,
+          expireAt: perm.expire_at,
+          extraAttempts: perm.extra_attempts,
+          usedAttempts: perm.used_attempts,
+          reason: perm.reason,
+        }
+      : null;
+    data.resubmit_status = row.resubmit_status || 'normal';
 
     res.json({
       success: true,
@@ -498,6 +641,60 @@ const getSimilarityCompare = async (req, res) => {
   }
 };
 
+const downloadAttachment = async (req, res) => {
+  try {
+    const submissionId = req.params.id;
+    const attachmentId = req.params.attachmentId;
+
+    const [submissions] = await pool.query(
+      'SELECT id, student_id, file_path, file_name, file_type FROM submissions WHERE id = ?',
+      [submissionId]
+    );
+    if (!submissions.length) {
+      return res.status(404).json({ success: false, message: '提交不存在' });
+    }
+    const sub = submissions[0];
+
+    if (req.user.role === 'student' && Number(sub.student_id) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, message: '无权下载该附件' });
+    }
+    if (req.user.role === 'teacher') {
+      const ok = await teacherOwnsSubmissionTask(req.user.id, submissionId);
+      if (!ok) return res.status(403).json({ success: false, message: '无权下载该附件' });
+    } else if (req.user.role === 'enterprise') {
+      const ok = await enterpriseOwnsSubmissionTask(req.user.id, submissionId);
+      if (!ok) return res.status(403).json({ success: false, message: '无权下载该附件' });
+    }
+
+    let filePath = null;
+    let fileName = null;
+    let mimeType = null;
+
+    if (attachmentId === 'legacy' || attachmentId === '0') {
+      filePath = sub.file_path;
+      fileName = sub.file_name;
+      mimeType = sub.file_type;
+    } else {
+      const att = await getAttachmentById(attachmentId);
+      if (!att || Number(att.submission_id) !== Number(submissionId)) {
+        return res.status(404).json({ success: false, message: '附件不存在' });
+      }
+      filePath = att.file_path;
+      fileName = att.original_name;
+      mimeType = att.mime_type;
+    }
+
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: '文件不存在' });
+    }
+
+    if (mimeType) res.setHeader('Content-Type', mimeType);
+    res.download(filePath, fileName || path.basename(filePath));
+  } catch (error) {
+    res.status(500).json({ success: false, message: '下载失败', error: error.message });
+  }
+};
+
 const deleteSubmission = async (req, res) => {
   try {
     const [meta] = await pool.query(
@@ -536,11 +733,26 @@ const deleteSubmission = async (req, res) => {
   }
 };
 
+const getSubmissionHistory = async (req, res) => {
+  try {
+    const { listSubmissionHistory } = require('../services/submissionHistoryService');
+    const data = await listSubmissionHistory(req.params.id, req.user.id, req.user.role);
+    res.json({ success: true, data });
+  } catch (error) {
+    const status = error.status || 500;
+    res.status(status).json({ success: false, message: error.message || '获取历史版本失败', error: error.message });
+  }
+};
+
 module.exports = {
   submitAssignment,
+  getTeacherGradingWorkbench,
   getSubmissionsByTask,
   getSubmissionById,
+  getSubmissionHistory,
+  getMySubmissionByTask,
   getSimilarityCompare,
+  downloadAttachment,
   getStudentSubmissions,
   deleteSubmission,
 };

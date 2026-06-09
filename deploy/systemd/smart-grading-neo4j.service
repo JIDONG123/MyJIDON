@@ -1,0 +1,16 @@
+[Unit]
+Description=龙芯智训 - Neo4j (Docker Compose)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+WorkingDirectory=__INSTALL_ROOT__
+ExecStart=/usr/bin/docker compose -f docker-compose.host.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.host.yml down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

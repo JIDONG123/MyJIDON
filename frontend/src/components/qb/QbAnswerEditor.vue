@@ -1,5 +1,5 @@
 <template>
-  <div class="qb-answer-editor">
+  <div class="qb-answer-editor" :class="{ 'qb-answer-editor--exam': optionStyle === 'exam' }">
     <!-- 单选题 -->
     <template v-if="question.type === 'single'">
       <div v-if="displayOpts.length" class="opt-list">
@@ -127,6 +127,8 @@ const props = defineProps({
   dense: { type: Boolean, default: false },
   /** 在主观类输入下方显示字数 */
   charCountVisible: { type: Boolean, default: false },
+  /** default | exam — 考试模式选项整行可点样式 */
+  optionStyle: { type: String, default: 'default' },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -251,5 +253,32 @@ const judgeNormalized = computed(() => {
   color: var(--sg-text-secondary);
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.qb-answer-editor--exam .opt-line {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.qb-answer-editor--exam .opt-line:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 1px rgba(22, 119, 255, 0.08);
+}
+
+.qb-answer-editor--exam :deep(.el-radio.opt-line.is-checked),
+.qb-answer-editor--exam :deep(.el-checkbox.opt-line.is-checked) {
+  border-color: #1677ff;
+  background: #eff6ff;
+  box-shadow: 0 0 0 1px rgba(22, 119, 255, 0.12);
+}
+
+.qb-answer-editor--exam .judge-group :deep(.el-radio) {
+  margin-right: 0;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
 }
 </style>

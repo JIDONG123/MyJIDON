@@ -137,6 +137,25 @@ async function safeDelByPrefix(prefix) {
   }
 }
 
+/** 关闭 Redis 连接（测试 / 脚本退出前调用） */
+async function closeRedis() {
+  if (!client) return;
+  const c = client;
+  client = null;
+  initAttempted = false;
+  try {
+    if (c.status !== 'end') {
+      await c.quit();
+    }
+  } catch {
+    try {
+      c.disconnect();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 module.exports = {
   getRedis,
   ensureConnected,
@@ -144,4 +163,5 @@ module.exports = {
   safeSet,
   safeDel,
   safeDelByPrefix,
+  closeRedis,
 };

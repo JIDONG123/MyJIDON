@@ -10,52 +10,156 @@
       <el-skeleton class="practice-skel" animated :rows="8" />
     </template>
 
-    <!-- 已提交：仅成绩回看 + 顶部返回（不再使用答题工作台） -->
+    <!-- 已提交：练习结果报告（不再使用答题工作台） -->
     <template v-else-if="isReviewMode">
-      <div class="practice-review-bar">
-        <el-button text type="primary" class="back-btn" @click="goBack">
-          <span class="back-ico">←</span> 返回列表
-        </el-button>
-      </div>
-      <header class="review-head">
-        <div class="review-head-main">
-          <h1 class="review-title">{{ title }}</h1>
-          <p class="review-sub">习题练习 · 成绩查看</p>
+      <div class="result-report-scroll">
+        <div class="result-report">
+        <div class="result-report__bar">
+          <el-button text type="primary" class="back-btn" @click="goBack">
+            <span class="back-ico">←</span> 返回列表
+          </el-button>
         </div>
-        <div class="review-head-meta">
-          <el-tag v-if="deadlineText" type="info" effect="plain">截止 {{ deadlineText }}</el-tag>
-          <el-tag size="small" :type="attemptTagType" effect="plain">{{ attemptTagText }}</el-tag>
-        </div>
-      </header>
 
-      <el-alert type="success" show-icon :closable="false" class="mb16" title="您已提交本题练习，以下为成绩查看（不可修改）。" />
-      <el-alert
-        v-if="attemptInfo && !scoresVisible"
-        type="info"
-        show-icon
-        :closable="false"
-        class="mb16"
-        title="分数明细将在教师公布成绩后显示；主观题得分以教师批改为准。"
-      />
-      <el-card v-if="scoresVisible" shadow="never" class="score-card">
-        <template #header><span class="score-card-title">成绩概览</span></template>
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="总分">{{ fmtScore(attemptInfo?.total_score) }}</el-descriptions-item>
-          <el-descriptions-item label="客观分">{{ fmtScore(attemptInfo?.objective_score) }}</el-descriptions-item>
-          <el-descriptions-item label="主观分">{{ fmtScore(attemptInfo?.subjective_score) }}</el-descriptions-item>
-          <el-descriptions-item label="交卷时间">{{ formatDateTime(attemptInfo?.submitted_at) }}</el-descriptions-item>
-        </el-descriptions>
-        <el-table v-if="perQuestionRows.length" :data="perQuestionRows" size="small" border class="mt12">
-          <el-table-column type="index" label="序号" width="64" />
-          <el-table-column label="题型" width="100">
-            <template #default="{ row }">{{ qbTypeLabel(row.type) }}</template>
-          </el-table-column>
-          <el-table-column prop="stemPreview" label="题干摘要" min-width="160" show-overflow-tooltip />
-          <el-table-column label="本题得分" width="120" align="right">
-            <template #default="{ row }">{{ row.scoreLine }}</template>
-          </el-table-column>
-        </el-table>
-      </el-card>
+        <header class="result-head">
+          <div class="result-head__main">
+            <h1 class="result-head__title">练习结果</h1>
+            <p class="result-head__sub">查看本次练习得分、题目得分明细与学习反馈。</p>
+            <h2 class="result-head__practice">{{ title }}</h2>
+          </div>
+          <div class="result-head__meta">
+            <el-tag :type="resultStatus.tagType" effect="plain">{{ resultStatus.label }}</el-tag>
+            <el-tag v-if="deadlineText" type="info" effect="plain">截止 {{ deadlineText }}</el-tag>
+            <el-tag v-if="attemptInfo?.submitted_at" type="info" effect="plain">
+              交卷 {{ formatDateTime(attemptInfo.submitted_at) }}
+            </el-tag>
+          </div>
+        </header>
+
+        <div class="notice-card" role="note">
+          <el-icon class="notice-card__icon"><CircleCheck /></el-icon>
+          <p class="notice-card__text">已提交本次练习，当前结果仅供学习反馈，不可修改。</p>
+        </div>
+
+        <template v-if="scoresVisible">
+          <section class="metric-grid">
+            <div
+              v-for="card in resultStatCards"
+              :key="card.key"
+              class="metric-card"
+              :class="{ 'metric-card--highlight': card.highlight }"
+            >
+              <div class="metric-card__icon" :class="`metric-card__icon--${card.tone}`">
+                <el-icon><component :is="card.icon" /></el-icon>
+              </div>
+              <div class="metric-card__body">
+                <div class="metric-card__value-row">
+                  <span class="metric-card__value">{{ card.value }}</span>
+                  <el-tag
+                    v-if="card.tier"
+                    size="small"
+                    :type="card.tier.tagType"
+                    effect="plain"
+                    class="metric-card__tier"
+                  >
+                    {{ card.tier.label }}
+                  </el-tag>
+                </div>
+                <span class="metric-card__label">{{ card.label }}</span>
+                <span v-if="card.hint" class="metric-card__hint">{{ card.hint }}</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="insight-banner" :class="`insight-banner--${resultInsight.tone}`">
+            <strong class="insight-banner__title">{{ resultInsight.title }}</strong>
+            <p class="insight-banner__text">{{ resultInsight.text }}</p>
+          </div>
+
+          <section v-if="typeScoreRows.length" class="panel type-panel">
+            <h3 class="panel__title">题型得分统计</h3>
+            <div class="type-stats">
+              <div v-for="item in typeScoreRows" :key="item.type" class="type-stat">
+                <div class="type-stat__head">
+                  <span class="type-stat__label">{{ item.typeLabel }}</span>
+                  <span class="type-stat__score">{{ item.scoreText }} 分</span>
+                </div>
+                <el-progress
+                  :percentage="item.rate"
+                  :stroke-width="8"
+                  :color="item.rate >= 80 ? '#16a34a' : item.rate >= 60 ? '#1677ff' : '#ea580c'"
+                />
+              </div>
+            </div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="detail-panel__head">
+              <h3 class="panel__title">题目得分明细</h3>
+              <el-radio-group v-if="questionRows.length" v-model="questionFilter" size="small">
+                <el-radio-button value="all">全部题目</el-radio-button>
+                <el-radio-button value="scored">得分题</el-radio-button>
+                <el-radio-button value="deducted">扣分题</el-radio-button>
+                <el-radio-button value="subjective">主观题</el-radio-button>
+              </el-radio-group>
+            </div>
+
+            <div v-if="!questionRows.length" class="detail-empty">
+              <h4 class="detail-empty__title">暂无题目明细</h4>
+              <p class="detail-empty__text">本次练习结果已生成，但暂无可展示的题目得分明细。</p>
+            </div>
+
+            <div v-else-if="!filteredQuestionRows.length" class="detail-empty">
+              <p class="detail-empty__text">当前筛选下暂无题目，请切换筛选条件。</p>
+            </div>
+
+            <div v-else class="question-list">
+              <article
+                v-for="item in filteredQuestionRows"
+                :key="item.pq_id"
+                class="question-card"
+                :class="`question-card--${item.scoreStatus.key}`"
+              >
+                <div class="question-card__head">
+                  <div class="question-card__title-row">
+                    <span class="question-card__no">第 {{ item.index }} 题</span>
+                    <el-tag size="small" type="primary" effect="plain">{{ item.typeLabel }}</el-tag>
+                  </div>
+                  <el-tag size="small" :type="item.scoreStatus.tagType" effect="plain">
+                    {{ item.scoreStatus.label }}
+                  </el-tag>
+                </div>
+                <p class="question-card__stem">{{ item.stemPreview }}</p>
+                <div class="question-card__score">
+                  <span class="question-card__score-label">得分</span>
+                  <span class="question-card__score-value">{{ item.scoreLine }} 分</span>
+                </div>
+                <div v-if="item.studentAnswer" class="question-card__extra">
+                  <span class="question-card__extra-label">我的作答</span>
+                  <p class="question-card__extra-text">{{ item.studentAnswer }}</p>
+                </div>
+                <div v-if="item.teacherComment" class="question-card__extra">
+                  <span class="question-card__extra-label">教师评语</span>
+                  <p class="question-card__extra-text">{{ item.teacherComment }}</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <StudentAiSuggestionPanel :items="aiSuggestionItems" />
+        </template>
+
+        <div v-else class="panel pending-panel">
+          <el-empty :image-size="80">
+            <template #description>
+              <h4 class="detail-empty__title">成绩待公布</h4>
+              <p class="detail-empty__text">
+                分数明细将在教师公布成绩后显示；主观题得分以教师批改为准。
+              </p>
+            </template>
+          </el-empty>
+        </div>
+        </div>
+      </div>
     </template>
 
     <!-- 作答中：工作台 -->
@@ -118,14 +222,31 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { CircleCheck, Trophy, Document, EditPen, Clock } from '@element-plus/icons-vue'
 import { useRtOnDomains } from '../../composables/useRtOnDomains'
 import { useUserStore } from '../../stores/user'
 import { getPracticePaper, savePracticeDraft, submitPractice, runPracticeCode } from '../../api/qb'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import QbAnswerEditor from '../../components/qb/QbAnswerEditor.vue'
 import QbStudentTakeWorkspace from '../../components/qb/QbStudentTakeWorkspace.vue'
-import { qbTypeLabel, qbAttemptStatusLabel, qbAttemptStatusTagType, parseJsonLoose } from '../../utils/qbLabels'
+import StudentAiSuggestionPanel from '../../components/student/StudentAiSuggestionPanel.vue'
+import { qbTypeLabel, qbAttemptStatusLabel, qbAttemptStatusTagType } from '../../utils/qbLabels'
 import { formatDateTime } from '../../utils/format'
+import {
+  buildAiSuggestionDisplayItems,
+  buildQuestionIndexMap,
+} from '../../utils/studentAiSuggestionDisplay'
+import {
+  buildPracticeQuestionRows,
+  aggregateTypeScores,
+  computePracticeMaxTotal,
+  formatResultScore,
+  formatScoreWithMax,
+  practiceResultInsight,
+  resultStatusLabel,
+  filterQuestionRows,
+  resolveTotalScoreTier,
+} from '../../utils/studentPracticeResultDisplay'
 
 const route = useRoute()
 const router = useRouter()
@@ -143,6 +264,7 @@ const runDlg = ref(false)
 const runResult = ref('')
 const runLoading = ref(null)
 const attemptInfo = ref(null)
+const questionFilter = ref('all')
 const savingDraft = ref(false)
 const submitting = ref(false)
 const sessionStartMs = ref(0)
@@ -176,6 +298,83 @@ const scoresVisible = computed(() => {
   if (!a?.submitted_at) return false
   const nums = [a.total_score, a.objective_score, a.subjective_score].map((x) => Number(x))
   return nums.some((n) => Number.isFinite(n))
+})
+
+const maxTotalScore = computed(() => computePracticeMaxTotal(questions.value))
+
+const resultStatus = computed(() => resultStatusLabel(attemptInfo.value?.status))
+
+const questionRows = computed(() =>
+  buildPracticeQuestionRows(questions.value, attemptInfo.value)
+)
+
+const aiSuggestionItems = computed(() => {
+  if (!scoresVisible.value) return []
+  const indexMap = buildQuestionIndexMap(
+    questions.value.map((q, i) => ({ pq_id: q.pq_id, index: i + 1 })),
+    'pq_id'
+  )
+  return buildAiSuggestionDisplayItems(attemptInfo.value?.ai_suggestion, { indexMap })
+})
+
+const filteredQuestionRows = computed(() =>
+  filterQuestionRows(questionRows.value, questionFilter.value)
+)
+
+const typeScoreRows = computed(() => {
+  if (!scoresVisible.value || !questionRows.value.length) return []
+  const rows = aggregateTypeScores(questionRows.value)
+  return rows.length ? rows : []
+})
+
+const totalScoreTier = computed(() => {
+  if (!scoresVisible.value) return null
+  return resolveTotalScoreTier(attemptInfo.value?.total_score, maxTotalScore.value)
+})
+
+const resultInsight = computed(() =>
+  practiceResultInsight(attemptInfo.value?.total_score, maxTotalScore.value)
+)
+
+const resultStatCards = computed(() => {
+  const a = attemptInfo.value
+  const max = maxTotalScore.value
+  return [
+    {
+      key: 'total',
+      label: '总分',
+      value: formatScoreWithMax(a?.total_score, max),
+      hint: max > 0 ? `满分 ${max.toFixed(2)} 分` : '',
+      icon: Trophy,
+      tone: 'blue',
+      highlight: true,
+      tier: totalScoreTier.value,
+    },
+    {
+      key: 'objective',
+      label: '客观题得分',
+      value: `${formatResultScore(a?.objective_score)} 分`,
+      hint: '自动判分',
+      icon: Document,
+      tone: 'teal',
+    },
+    {
+      key: 'subjective',
+      label: '主观题得分',
+      value: `${formatResultScore(a?.subjective_score)} 分`,
+      hint: '教师批改',
+      icon: EditPen,
+      tone: 'green',
+    },
+    {
+      key: 'submitted',
+      label: '交卷时间',
+      value: a?.submitted_at ? formatDateTime(a.submitted_at) : '—',
+      hint: '',
+      icon: Clock,
+      tone: 'indigo',
+    },
+  ]
 })
 
 const shuffleOpts = computed(() => !!practiceRow.value?.shuffle_options)
@@ -225,37 +424,6 @@ function isFlaggedAt(i) {
 const answeredCount = computed(() => {
   if (!questions.value.length) return 0
   return questions.value.filter((q) => answerNonEmpty(answers[String(q.pq_id)])).length
-})
-
-function fmtScore(v) {
-  if (v == null || v === '') return '—'
-  const n = Number(v)
-  return Number.isFinite(n) ? n.toFixed(2) : '—'
-}
-
-function stemPreview(stem) {
-  const t = String(stem || '').replace(/\s+/g, ' ').trim()
-  if (!t) return '—'
-  return t.length <= 48 ? t : `${t.slice(0, 48)}…`
-}
-
-function cellScoreLine(cell, maxScore) {
-  if (!cell || typeof cell !== 'object') return '—'
-  if (cell.pending) return '待批改'
-  const e = Number(cell.earned)
-  if (Number.isFinite(e)) return `${e.toFixed(1)} / ${maxScore} 分`
-  return '—'
-}
-
-const perQuestionRows = computed(() => {
-  const a = attemptInfo.value
-  if (!a || !questions.value.length) return []
-  const per = parseJsonLoose(a.per_question_scores) || {}
-  return questions.value.map((q) => ({
-    type: q.type,
-    stemPreview: stemPreview(q.stem),
-    scoreLine: cellScoreLine(per[String(q.pq_id)], Number(q.max_score) || 0),
-  }))
 })
 
 function flagsKey() {
@@ -482,17 +650,35 @@ onUnmounted(() => {
 }
 
 .practice-take--review {
-  flex: 1;
+  flex: 1 1 0%;
   min-height: 0;
-  overflow-y: auto;
-  padding: 16px 20px 32px;
-  max-width: 920px;
-  margin: 0 auto;
-  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin: -16px -20px;
+  padding: 0;
+  background: #eef2f7;
+  width: auto;
+  max-width: none;
   box-sizing: border-box;
 }
 
-.practice-review-bar {
+.result-report-scroll {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 20px 32px;
+}
+
+.result-report {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.result-report__bar {
   margin-bottom: 12px;
 }
 
@@ -505,42 +691,390 @@ onUnmounted(() => {
   margin-right: 4px;
 }
 
-.review-head {
+.result-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px 20px;
   margin-bottom: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--sg-border, #ebeef5);
 }
 
-.review-title {
+.result-head__title {
   margin: 0 0 6px;
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
-  color: var(--sg-text);
+  color: #0f172a;
 }
 
-.review-sub {
-  margin: 0;
+.result-head__sub {
+  margin: 0 0 10px;
   font-size: 14px;
-  color: var(--sg-text-secondary);
+  line-height: 1.65;
+  color: #64748b;
 }
 
-.review-head-meta {
+.result-head__practice {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.result-head__meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
 }
 
-.mb16 {
+.notice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+}
+
+.notice-card__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 18px;
+  color: #16a34a;
+}
+
+.notice-card__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #166534;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
   margin-bottom: 16px;
 }
 
-.score-card {
+.metric-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e8edf3;
   border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.metric-card--highlight {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.metric-card__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  font-size: 20px;
+}
+
+.metric-card__icon--blue {
+  background: #eff6ff;
+  color: #1677ff;
+}
+.metric-card__icon--teal {
+  background: #f0fdfa;
+  color: #0d9488;
+}
+.metric-card__icon--green {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+.metric-card__icon--indigo {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.metric-card__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.metric-card__value-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.metric-card__value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.metric-card--highlight .metric-card__value {
+  font-size: 22px;
+  color: #1677ff;
+}
+
+.metric-card__tier {
+  flex-shrink: 0;
+}
+
+.metric-card__label {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.metric-card__hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.insight-banner {
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  border: 1px solid #e8edf3;
+  background: #fff;
+}
+
+.insight-banner--success {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.insight-banner--warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.insight-banner--danger {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.insight-banner--info {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.insight-banner__title {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.insight-banner__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #64748b;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  margin-bottom: 16px;
+  padding: 16px 18px;
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.type-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.type-stat__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.type-stat__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.type-stat__score {
+  font-size: 12px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.detail-empty {
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.detail-empty__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.detail-empty__text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.question-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.question-card {
+  padding: 14px 16px;
+  border: 1px solid #e8edf3;
+  border-radius: 12px;
+  background: #fafbfc;
+}
+
+.question-card--full {
+  border-left: 3px solid #16a34a;
+}
+.question-card--partial {
+  border-left: 3px solid #ea580c;
+}
+.question-card--zero {
+  border-left: 3px solid #dc2626;
+}
+.question-card--pending {
+  border-left: 3px solid #94a3b8;
+}
+
+.question-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.question-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-card__no {
+  font-size: 14px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.question-card__stem {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #475569;
+}
+
+.question-card__score {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #f1f5f9;
+}
+
+.question-card__score-label {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.question-card__score-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.question-card__extra {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.question-card__extra-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.question-card__extra-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #475569;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pending-panel {
+  padding: 24px 16px;
+}
+
+@media (max-width: 640px) {
+  .result-head__meta {
+    justify-content: flex-start;
+  }
+
+  .detail-panel__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .practice-take--fill {
@@ -563,16 +1097,8 @@ onUnmounted(() => {
   padding: 24px;
 }
 
-.score-card-title {
-  font-weight: 600;
-}
-
 .mb8 {
   margin-bottom: 10px;
-}
-
-.mt12 {
-  margin-top: 12px;
 }
 
 .qb-ws-q-block {
@@ -631,5 +1157,14 @@ onUnmounted(() => {
   background: var(--sg-bg-muted, #f5f7fa);
   padding: 12px;
   border-radius: 8px;
+}
+</style>
+
+<style>
+/* workspace 壳层默认 overflow:hidden，结果页需内层滚动容器占满剩余高度 */
+.practice-take.practice-take--review.route-view-root--workspace {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
 }
 </style>

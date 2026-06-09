@@ -1,11 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { login as apiLogin, register as apiRegister, getUserInfo } from '../api/user'
+import { login as apiLogin, logout as apiLogout, register as apiRegister, getUserInfo } from '../api/user'
+import { resetAuthSessionHandler } from '../utils/authSessionHandler'
 import { disconnectRealtime } from '../socket/realtimeClient'
+import { resetCodeRunnerProbe } from '../composables/useCodeRunnerFeature'
+import {
+  clearAuthStorage,
+  clearLegacyAuthStorage,
+  getToken,
+  getUserRaw,
+  setToken,
+  setUserRaw,
+} from '../utils/authStorage'
 
 function readUserFromStorage() {
   try {
-    const raw = localStorage.getItem('user')
+    const raw = getUserRaw()
     if (!raw) return null
     return JSON.parse(raw)
   } catch {
@@ -13,26 +23,28 @@ function readUserFromStorage() {
   }
 }
 
+// 清理旧版 localStorage 登录态（不影响当前 sessionStorage）
+clearLegacyAuthStorage()
+
 export const useUserStore = defineStore('user', () => {
-  const token = ref(localStorage.getItem('token') || '')
-  // 与 token 一致：首屏同步从 localStorage 恢复，避免布局渲染时 user 仍为 null 报错
+  const token = ref(getToken())
   const user = ref(readUserFromStorage())
   const isLoggedIn = computed(() => !!token.value && !!user.value)
 
-  const login = async (username, password) => {
+  const login = async (username, password, captchaId, captchaCode) => {
     try {
-      const response = await apiLogin(username, password)
+      const response = await apiLogin(username, password, captchaId, captchaCode)
       if (response.success) {
         token.value = response.token
         user.value = response.user
-        localStorage.setItem('token', response.token)
-        localStorage.setItem('user', JSON.stringify(response.user))
+        setToken(response.token)
+        setUserRaw(JSON.stringify(response.user))
         return true
       }
       return false
     } catch (error) {
       console.error('Login error:', error)
-      return false
+      throw error
     }
   }
 
@@ -54,16 +66,24 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  const logout = () => {
+  const logout = async (options = {}) => {
+    const { callApi = true } = options
+    const previousToken = token.value || getToken()
     disconnectRealtime()
     token.value = ''
     user.value = null
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+    clearAuthStorage()
+    resetCodeRunnerProbe()
+    resetAuthSessionHandler()
+    if (callApi && previousToken) {
+      apiLogout(previousToken).catch(() => {
+        /* 已被踢下线或网络异常时忽略 */
+      })
+    }
   }
 
   const loadUserFromStorage = () => {
-    const storedUser = localStorage.getItem('user')
+    const storedUser = getUserRaw()
     if (storedUser) {
       user.value = JSON.parse(storedUser)
     }
@@ -74,11 +94,17 @@ export const useUserStore = defineStore('user', () => {
       const response = await getUserInfo()
       if (response.success) {
         user.value = response.user
-        localStorage.setItem('user', JSON.stringify(response.user))
+        setUserRaw(JSON.stringify(response.user))
       }
     } catch (error) {
       console.error('Fetch user info error:', error)
     }
+  }
+
+  const clearMustChangePassword = () => {
+    if (!user.value) return
+    user.value = { ...user.value, mustChangePassword: false }
+    setUserRaw(JSON.stringify(user.value))
   }
 
   return {
@@ -89,6 +115,7 @@ export const useUserStore = defineStore('user', () => {
     register,
     logout,
     loadUserFromStorage,
-    fetchUserInfo
+    fetchUserInfo,
+    clearMustChangePassword,
   }
 })

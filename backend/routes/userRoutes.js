@@ -8,12 +8,19 @@ const loginLimiter = createLoginLimiter();
 
 router.post('/register', userController.register);
 router.post('/login', loginLimiter, userController.login);
+router.post('/logout', authenticateToken, userController.logout);
 router.get('/me', authenticateToken, userController.getUserInfo);
 router.patch(
   '/me/profile',
   authenticateToken,
   requireRole(['teacher', 'student']),
   userController.updateMyProfile
+);
+router.patch(
+  '/me/credentials',
+  authenticateToken,
+  requireRole(['teacher', 'student']),
+  userController.updateMyCredentials
 );
 router.get('/me/archive', authenticateToken, requireRole(['student']), userController.getMyArchive);
 router.post(
@@ -37,11 +44,23 @@ router.get(
   userController.listAdminTeachers
 );
 router.post('/student', authenticateToken, requireRole(['admin']), userController.createStudent);
+router.post(
+  '/students/:id/reset-initial-password',
+  authenticateToken,
+  requireRole(['admin']),
+  userController.resetStudentInitialPassword
+);
+router.post(
+  '/teachers/:id/reset-initial-password',
+  authenticateToken,
+  requireRole(['admin']),
+  userController.resetTeacherInitialPassword
+);
 
 router.get(
   '/pick-students',
   authenticateToken,
-  requireRole(['teacher']),
+  requireRole(['teacher', 'admin']),
   userController.searchStudentsForClass
 );
 
@@ -70,7 +89,20 @@ router.put(
   requireRole(['admin']),
   userController.setEnterpriseUserClasses
 );
+router.get(
+  '/enterprise-accounts/:id/teaching-classes',
+  authenticateToken,
+  requireRole(['admin']),
+  userController.getEnterpriseUserTeachingClasses
+);
+router.put(
+  '/enterprise-accounts/:id/teaching-classes',
+  authenticateToken,
+  requireRole(['admin']),
+  userController.setEnterpriseUserTeachingClasses
+);
 router.get('/:id', authenticateToken, requireRole(['admin']), userController.getUserById);
+router.get('/:id/password', authenticateToken, requireRole(['admin']), userController.getAdminUserPassword);
 router.put('/:id', authenticateToken, requireRole(['admin']), userController.updateUser);
 router.delete('/:id', authenticateToken, requireRole(['admin']), userController.deleteUser);
 router.post('/teacher', authenticateToken, requireRole(['admin']), userController.createTeacher);

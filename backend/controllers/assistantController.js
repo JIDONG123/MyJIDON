@@ -1,7 +1,13 @@
 const pool = require('../config/database');
-const { chatCompletion, getSystemConfigs } = require('../utils/llmClient');
-const { retrieveTeacherKbContext } = require('../utils/ragRetrieve');
-const { getStudentClassId } = require('../utils/accessControl');
+const { generateAssistantReply, streamAssistantReply } = require('../services/assistantService');
+const { detectTextSafety, auditAndReturn } = require('../services/contentSafetyService');
+const {
+  isAssistantStreamEnabled,
+  initSseResponse,
+  writeSseEvent,
+  createSseHeartbeat,
+  clearSseHeartbeat,
+} = require('../utils/sseHelper');
 
 function containsBlockedWords(text, blockedCsv) {
   if (!blockedCsv || !String(blockedCsv).trim()) return false;
@@ -11,26 +17,6 @@ function containsBlockedWords(text, blockedCsv) {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   return parts.some((w) => w && t.includes(w));
-}
-
-async function kbTeacherIdForStudent(studentId) {
-  const [r] = await pool.query(
-    `SELECT c.teacher_id FROM users u JOIN classes c ON c.id = u.class_id WHERE u.id = ? AND u.role = 'student'`,
-    [studentId]
-  );
-  return r[0]?.teacher_id || null;
-}
-
-async function taskContextForStudent(studentId) {
-  const cid = await getStudentClassId(studentId);
-  if (!cid) return '';
-  const [tasks] = await pool.query(
-    `SELECT id, title, requirements, scoring_criteria FROM tasks WHERE class_id = ? ORDER BY created_at DESC LIMIT 12`,
-    [cid]
-  );
-  return tasks
-    .map((t) => `【任务${t.id}】${t.title}\n要求摘要：${String(t.requirements || '').slice(0, 400)}`)
-    .join('\n\n');
 }
 
 const listSessions = async (req, res) => {
@@ -88,9 +74,18 @@ const postMessage = async (req, res) => {
     ]);
     if (!sess.length) return res.status(404).json({ success: false, message: '会话不存在' });
 
-    const cfg = await getSystemConfigs(['assistant_blocked_words']);
-    if (containsBlockedWords(content, cfg.assistant_blocked_words)) {
-      return res.status(400).json({ success: false, message: '内容包含受限词汇，请修改后重试' });
+    const textR = await detectTextSafety(content, { type: 'assistant' });
+    if (textR.riskLevel === 'blocked') {
+      await auditAndReturn(
+        {
+          targetType: 'assistant',
+          targetId: sid,
+          userId: req.user.id,
+          userRole: req.user.role,
+        },
+        textR
+      );
+      return res.status(400).json({ success: false, message: textR.reason || '内容包含受限词汇，请修改后重试' });
     }
 
     await pool.query(`INSERT INTO assistant_messages (session_id, role, content) VALUES (?, 'user', ?)`, [
@@ -98,35 +93,142 @@ const postMessage = async (req, res) => {
       content,
     ]);
 
-    const teacherId = await kbTeacherIdForStudent(req.user.id);
-    const rag = teacherId ? await retrieveTeacherKbContext(teacherId, content) : '';
-    const taskCtx = await taskContextForStudent(req.user.id);
-
-    const system = `你是高职实训场景的答疑助手，仅根据提供的「班级任务摘要」与「教师知识库片段」回答，不要编造未给出的评分细则。若资料不足请明确说明。回答简洁、可操作。`;
-    const userMsg = `【学生问题】\n${content}\n\n【本班任务与要求摘要（节选）】\n${taskCtx.slice(0, 6000)}\n\n【知识库片段】\n${String(rag || '').slice(0, 6000)}`;
-
-    let answer = '';
-    try {
-      answer = await chatCompletion(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: userMsg },
-        ],
-        { temperature: 0.3, max_tokens: 2048 }
-      );
-    } catch (e) {
-      answer = `（模型暂不可用）${e.message}`;
-    }
+    const { answer, mode, ragHit, sources } = await generateAssistantReply({
+      studentId: req.user.id,
+      sessionId: sid,
+      question: content,
+    });
 
     await pool.query(`INSERT INTO assistant_messages (session_id, role, content) VALUES (?, 'assistant', ?)`, [
       sid,
-      answer || '（无回复）',
+      answer,
     ]);
     await pool.query(`UPDATE assistant_sessions SET updated_at = NOW() WHERE id = ?`, [sid]);
 
-    res.json({ success: true, data: { answer } });
+    res.json({
+      success: true,
+      data: {
+        answer,
+        mode,
+        ragHit,
+        sources,
+      },
+    });
   } catch (error) {
+    console.error('[assistant] postMessage failed:', error.message);
     res.status(500).json({ success: false, message: '发送失败', error: error.message });
+  }
+};
+
+const postMessageStream = async (req, res) => {
+  if (!isAssistantStreamEnabled()) {
+    return res.status(503).json({ success: false, message: '流式问答未启用，请使用普通接口' });
+  }
+
+  let clientClosed = false;
+  let heartbeatTimer = null;
+
+  const markClosed = () => {
+    clientClosed = true;
+    clearSseHeartbeat(heartbeatTimer);
+    heartbeatTimer = null;
+  };
+
+  req.on('close', markClosed);
+  res.on('close', markClosed);
+
+  const isEnded = () => clientClosed || res.writableEnded;
+
+  const writeEvent = (event, data) =>
+    writeSseEvent(res, event, data, { endedCheck: isEnded });
+
+  try {
+    const sid = Number(req.params.sessionId);
+    const content = String(req.body?.content || '').trim();
+    if (!content) return res.status(400).json({ success: false, message: '请输入内容' });
+
+    const [sess] = await pool.query(`SELECT id FROM assistant_sessions WHERE id = ? AND student_id = ?`, [
+      sid,
+      req.user.id,
+    ]);
+    if (!sess.length) return res.status(404).json({ success: false, message: '会话不存在' });
+
+    const textR = await detectTextSafety(content, { type: 'assistant' });
+    if (textR.riskLevel === 'blocked') {
+      await auditAndReturn(
+        {
+          targetType: 'assistant',
+          targetId: sid,
+          userId: req.user.id,
+          userRole: req.user.role,
+        },
+        textR
+      );
+      return res.status(400).json({ success: false, message: textR.reason || '内容包含受限词汇，请修改后重试' });
+    }
+
+    const [userInsert] = await pool.query(
+      `INSERT INTO assistant_messages (session_id, role, content) VALUES (?, 'user', ?)`,
+      [sid, content]
+    );
+    const userMessageId = userInsert.insertId;
+
+    initSseResponse(res);
+    heartbeatTimer = createSseHeartbeat(res, 15000, { endedCheck: isEnded });
+
+    writeEvent('start', {
+      conversationId: sid,
+      sessionId: sid,
+      userMessageId,
+    });
+
+    const { answer, mode, ragHit, sources } = await streamAssistantReply({
+      studentId: req.user.id,
+      sessionId: sid,
+      question: content,
+      isAborted: isEnded,
+      onDelta: (chunk) => {
+        writeEvent('delta', { content: chunk });
+      },
+    });
+
+    clearSseHeartbeat(heartbeatTimer);
+    heartbeatTimer = null;
+
+    if (isEnded()) return;
+
+    const [asstInsert] = await pool.query(
+      `INSERT INTO assistant_messages (session_id, role, content) VALUES (?, 'assistant', ?)`,
+      [sid, answer]
+    );
+    const answerId = asstInsert.insertId;
+    await pool.query(`UPDATE assistant_sessions SET updated_at = NOW() WHERE id = ?`, [sid]);
+
+    writeEvent('refs', {
+      mode,
+      ragHit,
+      references: sources,
+      sources,
+    });
+    writeEvent('done', {
+      answerId,
+      conversationId: sid,
+      sessionId: sid,
+      userMessageId,
+      interrupted: false,
+    });
+    if (!res.writableEnded) res.end();
+  } catch (error) {
+    console.error('[assistant] postMessageStream failed:', error.message);
+    clearSseHeartbeat(heartbeatTimer);
+    heartbeatTimer = null;
+    if (!res.headersSent) {
+      return res.status(500).json({ success: false, message: '生成失败，请稍后重试' });
+    }
+    if (!isEnded()) {
+      writeEvent('error', { message: '生成失败，请稍后重试' });
+      if (!res.writableEnded) res.end();
+    }
   }
 };
 
@@ -135,4 +237,5 @@ module.exports = {
   createSession,
   listMessages,
   postMessage,
+  postMessageStream,
 };

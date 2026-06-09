@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { getToken } from '../utils/authStorage'
 
 function blobHeaders() {
-  const token = localStorage.getItem('token')
+  const token = getToken()
   const h = {}
   if (token) h.Authorization = `Bearer ${token}`
   return h
@@ -16,9 +17,16 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url)
 }
 
-export async function downloadScoresExcel(classId, taskId) {
+export async function downloadScoresExcel(audienceId, taskId, options = {}) {
+  const isTeaching = options.scope === 'teaching' || options.teachingClassId != null
+  const params = { taskId }
+  if (isTeaching) {
+    params.teachingClassId = options.teachingClassId ?? audienceId
+  } else {
+    params.classId = audienceId
+  }
   const res = await axios.get('/api/export/scores', {
-    params: { classId, taskId },
+    params,
     responseType: 'blob',
     headers: blobHeaders(),
     validateStatus: () => true,
@@ -32,12 +40,20 @@ export async function downloadScoresExcel(classId, taskId) {
     } catch (_) {}
     throw new Error(msg)
   }
-  triggerDownload(res.data, `班级${classId}-任务${taskId}-成绩统计.xlsx`)
+  const label = isTeaching ? `教学班${params.teachingClassId}` : `班级${params.classId}`
+  triggerDownload(res.data, `${label}-任务${taskId}-成绩统计.xlsx`)
 }
 
-export async function downloadSubmissionsZip(classId, taskId) {
+export async function downloadSubmissionsZip(audienceId, taskId, options = {}) {
+  const isTeaching = options.scope === 'teaching' || options.teachingClassId != null
+  const params = { taskId }
+  if (isTeaching) {
+    params.teachingClassId = options.teachingClassId ?? audienceId
+  } else {
+    params.classId = audienceId
+  }
   const res = await axios.get('/api/export/submissions-zip', {
-    params: { classId, taskId },
+    params,
     responseType: 'blob',
     headers: blobHeaders(),
     validateStatus: () => true,
@@ -51,5 +67,17 @@ export async function downloadSubmissionsZip(classId, taskId) {
     } catch (_) {}
     throw new Error(msg)
   }
-  triggerDownload(res.data, `班级${classId}-任务${taskId}-作业附件.zip`)
+  const label = isTeaching ? `教学班${params.teachingClassId}` : `班级${params.classId}`
+  triggerDownload(res.data, `${label}-任务${taskId}-作业附件.zip`)
+}
+
+export async function getExportLogs(options = {}) {
+  const params = {}
+  if (options.limit != null) params.limit = options.limit
+  if (options.taskId != null) params.taskId = options.taskId
+  const res = await axios.get('/api/export/logs', {
+    params,
+    headers: blobHeaders(),
+  })
+  return res.data
 }
